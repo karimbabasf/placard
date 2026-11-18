@@ -95,7 +95,7 @@ final class StripView: NSView {
     private let fill = CALayer()
     private let shimmer = CALayer()
     private let nameLayer = CATextLayer()
-    private let emojiLayer = CATextLayer()
+    private let emojiLayer = CALayer()
     private let subLayer = CATextLayer()
     private let statusLayer = CATextLayer()
     private var dots: [CALayer] = []
@@ -119,7 +119,9 @@ final class StripView: NSView {
         shimmer.contentsGravity = .resize
         shimmer.isHidden = true
         body.addSublayer(shimmer)
-        for t in [emojiLayer, nameLayer, subLayer, statusLayer] {
+        emojiLayer.contentsGravity = .resizeAspect
+        body.addSublayer(emojiLayer)
+        for t in [nameLayer, subLayer, statusLayer] {
             t.contentsScale = 2
             t.truncationMode = .end
             t.isWrapped = false
@@ -155,7 +157,7 @@ final class StripView: NSView {
     override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
         let s = window?.backingScaleFactor ?? 2
-        for t in [emojiLayer, nameLayer, subLayer, statusLayer] { t.contentsScale = s }
+        for t in [nameLayer, subLayer, statusLayer] { t.contentsScale = s }
     }
 
     func configure(_ m: Model) {
@@ -172,13 +174,33 @@ final class StripView: NSView {
         for d in dots { d.backgroundColor = ink.cgColor }
         chevron.strokeColor = ink.withAlphaComponent(0.7).cgColor
         nameLayer.string = m.name
-        emojiLayer.string = NSAttributedString(string: m.emoji, attributes: [.font: NSFont(name: "AppleColorEmoji", size: 14) ?? .systemFont(ofSize: 14)])
+        if m.emoji != old.emoji || emojiLayer.contents == nil { emojiLayer.contents = Self.emojiImage(m.emoji) }
         subLayer.string = m.subtitle
         statusLayer.string = Self.statusText(m.state)
         CATransaction.commit()
         if old.state != m.state { applyState() }
         if old.color != m.color { fillKey = "" }
         needsLayout = true
+    }
+
+    /// Emoji as a bitmap fitted from its real ink bounds, so no part of the glyph
+    /// can fall outside a text line box and get clipped.
+    static func emojiImage(_ e: String) -> CGImage? {
+        guard !e.isEmpty else { return nil }
+        let font = NSFont(name: "AppleColorEmoji", size: 64) ?? .systemFont(ofSize: 64)
+        let str = NSAttributedString(string: e, attributes: [.font: font])
+        let ink = str.boundingRect(with: NSSize(width: 400, height: 400), options: [.usesDeviceMetrics, .usesLineFragmentOrigin])
+        let side = ceil(max(ink.width, ink.height)) + 4
+        let px = Int(side * 2)
+        guard let ctx = CGContext(data: nil, width: px, height: px, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        ctx.scaleBy(x: 2, y: 2)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
+        str.draw(at: NSPoint(x: (side - ink.width) / 2 - ink.minX, y: (side - ink.height) / 2 - ink.minY))
+        NSGraphicsContext.restoreGraphicsState()
+        return ctx.makeImage()
     }
 
     static func statusText(_ s: WorkState) -> String {
@@ -237,8 +259,8 @@ final class StripView: NSView {
         let statusText = Self.statusText(model.state) as NSString
         let statusW = statusText.length == 0 ? 0 : ceil(statusText.size(withAttributes: [.font: Fonts.pixel(12)]).width) + 2
         let dotsW: CGFloat = model.state == .working || model.state == .yourTurn ? 8 + 7 : 0
-        let emojiSlot: CGFloat = model.emoji.isEmpty ? 0 : 24 + (statusW > 0 ? 6 : 0)
-        emojiLayer.frame = CGRect(x: bounds.width - pad - 22, y: (h - 20) / 2, width: 20, height: 20)
+        let emojiSlot: CGFloat = model.emoji.isEmpty ? 0 : 20 + (statusW > 0 ? 6 : 0)
+        emojiLayer.frame = CGRect(x: bounds.width - pad - 18, y: (h - 18) / 2, width: 18, height: 18)
         let statusX = bounds.width - pad - emojiSlot - statusW
         statusLayer.frame = CGRect(x: statusX, y: (h - 15) / 2 - 1, width: statusW, height: 15)
         let cellS: CGFloat = 3, gap: CGFloat = 2
