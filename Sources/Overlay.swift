@@ -163,7 +163,7 @@ final class StripView: NSView {
         let old = model
         model = m
         configured = true
-        let ink = Palette.ink(m.color)
+        let ink = Palette.ink(m.color, dull: m.state != .working)
         CATransaction.begin()
         CATransaction.setDisableActions(old.color == m.color)
         nameLayer.foregroundColor = ink.cgColor
@@ -172,7 +172,7 @@ final class StripView: NSView {
         for d in dots { d.backgroundColor = ink.cgColor }
         chevron.strokeColor = ink.withAlphaComponent(0.7).cgColor
         nameLayer.string = m.name
-        emojiLayer.string = NSAttributedString(string: m.emoji, attributes: [.font: NSFont(name: "AppleColorEmoji", size: 15) ?? .systemFont(ofSize: 15)])
+        emojiLayer.string = NSAttributedString(string: m.emoji, attributes: [.font: NSFont(name: "AppleColorEmoji", size: 14) ?? .systemFont(ofSize: 14)])
         subLayer.string = m.subtitle
         statusLayer.string = Self.statusText(m.state)
         CATransaction.commit()
@@ -216,10 +216,18 @@ final class StripView: NSView {
         CATransaction.setDisableActions(true)
         body.frame = bounds
         fill.frame = bounds
-        let key = "\(model.color)-\(Int(bounds.width))-\(Int(bounds.height))"
+        let dull = model.state != .working
+        let key = "\(model.color)-\(dull)-\(Int(bounds.width))-\(Int(bounds.height))"
         if key != fillKey {
+            // Working strips are bright; everything else fades to a dull version.
+            if !fillKey.isEmpty, fillKey.hasPrefix("\(model.color)-") {
+                let t = CATransition()
+                t.type = .fade
+                t.duration = 0.45
+                fill.add(t, forKey: "dim")
+            }
             fillKey = key
-            fill.contents = Dither.strip(size: bounds.size, color: model.color, fade: 0.01)
+            fill.contents = Dither.strip(size: bounds.size, color: model.color, fade: 0.01, dull: dull)
         }
         updateMask()
 
@@ -229,7 +237,9 @@ final class StripView: NSView {
         let statusText = Self.statusText(model.state) as NSString
         let statusW = statusText.length == 0 ? 0 : ceil(statusText.size(withAttributes: [.font: Fonts.pixel(12)]).width) + 2
         let dotsW: CGFloat = model.state == .working || model.state == .yourTurn ? 8 + 7 : 0
-        let statusX = bounds.width - pad - statusW
+        let emojiSlot: CGFloat = model.emoji.isEmpty ? 0 : 24 + (statusW > 0 ? 6 : 0)
+        emojiLayer.frame = CGRect(x: bounds.width - pad - 22, y: (h - 20) / 2, width: 20, height: 20)
+        let statusX = bounds.width - pad - emojiSlot - statusW
         statusLayer.frame = CGRect(x: statusX, y: (h - 15) / 2 - 1, width: statusW, height: 15)
         let cellS: CGFloat = 3, gap: CGFloat = 2
         let gx = statusX - dotsW, gy = (h - (cellS * 2 + gap)) / 2
@@ -238,18 +248,16 @@ final class StripView: NSView {
             d.frame = CGRect(x: gx + CGFloat(cx) * (cellS + gap), y: gy + CGFloat(1 - cy) * (cellS + gap), width: cellS, height: cellS)
             d.isHidden = dotsW == 0
         }
-        let statusLeft = statusW > 0 ? gx - 16 : bounds.width - pad
+        let statusLeft = statusW > 0 ? gx - 16 : bounds.width - pad - emojiSlot - 8
 
         // name and subtitle
-        let emojiW: CGFloat = model.emoji.isEmpty ? 0 : 22
-        emojiLayer.frame = CGRect(x: StripMetrics.fade - 2, y: (h - 20) / 2 + 1, width: 20, height: 20)
-        let nameX = StripMetrics.fade + emojiW
+        let nameX = StripMetrics.fade
         let nameFull = ceil((model.name as NSString).size(withAttributes: [.font: Fonts.geist(17, "SemiBold")]).width) + 2
         let chevW: CGFloat = 14
         let nameW = max(0, min(nameFull, statusLeft - nameX - chevW))
         nameLayer.frame = CGRect(x: nameX, y: (h - 22) / 2, width: nameW, height: 22)
         chevron.frame = CGRect(x: nameX + nameW + 4, y: (h - 6) / 2, width: 9, height: 6)
-        controlRect = CGRect(x: nameX - emojiW - 8, y: 0, width: nameW + emojiW + chevW + 14, height: h)
+        controlRect = CGRect(x: nameX - 8, y: 0, width: nameW + chevW + 14, height: h)
         let subX = nameX + nameW + chevW + 10
         let subW = statusLeft - subX
         subLayer.isHidden = model.subtitle.isEmpty || subW < 50

@@ -62,6 +62,19 @@ enum Palette {
         return NSColor(srgbRed: r, green: g, blue: b, alpha: 1)
     }
 
+    /// Desaturated and darker: the "not working" look. Hue stays readable.
+    static func dulled(_ i: Int) -> (Double, Double, Double) {
+        let (r, g, b) = rgb(i)
+        let l = 0.2126 * r + 0.7152 * g + 0.0722 * b
+        let k = 0.38                                   // keep 38% of the chroma
+        return ((l + (r - l) * k) * 0.62, (l + (g - l) * k) * 0.62, (l + (b - l) * k) * 0.62)
+    }
+
+    static func ink(_ i: Int, dull: Bool) -> NSColor {
+        guard dull else { return ink(i) }
+        return NSColor(white: 1, alpha: 0.86)
+    }
+
     static func ink(_ i: Int) -> NSColor {
         all[((i % all.count) + all.count) % all.count].darkText
             ? NSColor(srgbRed: 0.10, green: 0.07, blue: 0.0, alpha: 1)

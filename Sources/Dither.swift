@@ -34,10 +34,10 @@ enum Dither {
 
     /// Strip fill: a two-tone dithered vertical gradient of the group color that
     /// dissolves into the native title bar over the first `fade` points.
-    static func strip(size: CGSize, color: Int, fade: CGFloat) -> CGImage? {
+    static func strip(size: CGSize, color: Int, fade: CGFloat, dull: Bool = false) -> CGImage? {
         let cols = max(1, Int(ceil(size.width / cell)))
         let rows = max(1, Int(ceil(size.height / cell)))
-        let base = Palette.rgb(color)
+        let base = dull ? Palette.dulled(color) : Palette.rgb(color)
         let top = mix(base, (1, 1, 1), 0.10)
         let bottom = mix(base, (0, 0, 0), 0.14)
         let fadeCols = max(1, Double(fade / cell))
