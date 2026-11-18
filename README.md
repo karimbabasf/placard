@@ -77,7 +77,7 @@ osascript -e 'tell application "Terminal" to get id of every window'
 open -g "placard://label?window=<id>&name=Test"
 ```
 
-The hero above is rendered by code, not recorded. `docs/make-hero.sh` draws the frames in `docs/hero.swift`, runs every fill through a 4x4 Bayer dither, and encodes the GIF with ffmpeg.
+The hero above is rendered by code, not recorded. `docs/make-hero.sh` draws the frames in `docs/hero.swift`, runs the strips through a 4x4 Bayer dither, and encodes the GIF with ffmpeg.
 
 ## Limits
 
