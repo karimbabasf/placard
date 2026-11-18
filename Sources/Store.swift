@@ -114,6 +114,7 @@ struct Saved: Codable {
     var didFirstLaunch: Bool = false
     var hidden: Bool? = nil                 // labels turned off, handles stay
     var emoji: [String: String]? = nil      // Terminal window id -> emoji
+    var tasks: [String: String]? = nil      // Terminal window id -> task text you typed over the title
     var auto: Bool? = nil                   // auto-label agent windows (default on)
     var originalColors: [String: [Int]]? = nil   // bg + text + bold, saved while Christmas mode runs
     var flash: Bool? = nil                  // Christmas mode when an agent needs you (default on)
@@ -189,6 +190,16 @@ final class Store {
 
     func emoji(forWindow id: Int) -> String? { saved.emoji?[String(id)] }
 
+    func task(forWindow id: Int) -> String? { saved.tasks?[String(id)] }
+    /// Empty text goes back to the task Terminal's title shows.
+    func setTask(_ text: String, forWindow id: Int) {
+        let clean = String(text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))
+        var map = saved.tasks ?? [:]
+        map[String(id)] = clean.isEmpty ? nil : clean
+        saved.tasks = map
+        commit()
+    }
+
     /// A random emoji no other labeled window is using right now.
     private func assignEmoji(_ id: Int, reroll: Bool = false) {
         var map = saved.emoji ?? [:]
@@ -261,6 +272,7 @@ final class Store {
     func unlabel(window id: Int) {
         saved.windows.removeValue(forKey: String(id))
         saved.emoji?.removeValue(forKey: String(id))
+        saved.tasks?.removeValue(forKey: String(id))
         saved.autoSkip = Array(Set((saved.autoSkip ?? []) + [String(id)]))
         pruneEmptyGroups()
         commit()
@@ -303,6 +315,7 @@ final class Store {
         saved.windows = saved.windows.filter { alive.contains(Int($0.key) ?? -1) }
         saved.originalBackground = saved.originalBackground.filter { alive.contains(Int($0.key) ?? -1) }
         saved.emoji = saved.emoji?.filter { alive.contains(Int($0.key) ?? -1) }
+        saved.tasks = saved.tasks?.filter { alive.contains(Int($0.key) ?? -1) }
         saved.autoSkip = saved.autoSkip?.filter { alive.contains(Int($0) ?? -1) }
         if saved.windows.count != before { pruneEmptyGroups(); commit() }
     }

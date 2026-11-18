@@ -102,6 +102,9 @@ final class StripView: NSView {
     private let chevron = CAShapeLayer()
     /// The clickable name area, in local points (the control panel sits here).
     private(set) var controlRect: CGRect = .zero
+    /// Inside controlRect: name up to nameEnd, chevron up to chevronEnd, task text after that.
+    private(set) var nameEnd: CGFloat = 0
+    private(set) var chevronEnd: CGFloat = 0
     private var fillKey = ""
     private var occluders: [CGRect] = []
     private var shimmerWidth: CGFloat = 0
@@ -295,10 +298,14 @@ final class StripView: NSView {
         let nameW = max(0, min(nameFull, statusLeft - nameX - chevW))
         nameLayer.frame = CGRect(x: nameX, y: (h - 22) / 2, width: nameW, height: 22)
         chevron.frame = CGRect(x: nameX + nameW + 4, y: (h - 6) / 2, width: 9, height: 6)
-        controlRect = CGRect(x: nameX - 8, y: 0, width: nameW + chevW + 14, height: h)
         let subX = nameX + nameW + chevW + 10
         let subW = statusLeft - subX
         subLayer.isHidden = model.subtitle.isEmpty || subW < 50
+        let subText = ceil((model.subtitle as NSString).size(withAttributes: [.font: Fonts.geist(12.5, "Medium")]).width)
+        nameEnd = nameW + 10
+        chevronEnd = nameW + chevW + 14
+        let taskEnd = subLayer.isHidden ? chevronEnd : subX + min(subW, subText) + 6 - (nameX - 8)
+        controlRect = CGRect(x: nameX - 8, y: 0, width: max(chevronEnd, taskEnd), height: h)
         subLayer.frame = CGRect(x: subX, y: (h - 16) / 2 - 1, width: max(0, subW), height: 16)
 
         shimmer.bounds = CGRect(x: 0, y: 0, width: 220, height: h)

@@ -21,6 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Window
 
         Store.shared.onChange = { [weak self] in self?.overlays.refreshInfo() }
         prompt.stateProvider = { [weak self] id in self?.overlays.state(for: id) ?? ("", .none) }
+        prompt.taskProvider = { [weak self] id in self?.overlays.terminalTask(for: id) ?? "" }
         overlays.actions = self
         overlays.start()
 
@@ -251,6 +252,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Window
         prompt.show(.rename(g, frame: anchor)) {}
     }
 
+    func renameTask(of window: Int, anchor: CGRect) {
+        guard Store.shared.group(forWindow: window) != nil else { return }
+        prompt.show(.task(window: window, frame: anchor)) {}
+    }
+
     func labelWindow(_ window: Int, anchor: CGRect) {
         prompt.show(.label(window: window, frame: anchor)) {}
     }
@@ -284,6 +290,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Window
             menu.addItem(head)
             menu.addItem(.separator())
             menu.addItem(item("Rename Group\u{2026}") { [weak self] in self?.renameGroup(of: window, anchor: anchor) })
+            menu.addItem(item("Rename Task\u{2026}") { [weak self] in self?.renameTask(of: window, anchor: anchor) })
             let colors = NSMenuItem(title: "Color", action: nil, keyEquivalent: "")
             let cm = NSMenu()
             for (ci, s) in Palette.all.enumerated() {

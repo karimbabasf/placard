@@ -1,10 +1,10 @@
 import AppKit
 import QuartzCore
 
-/// Small floating panel that names a window (or renames a group).
+/// Small floating panel that names a window, renames a group, or retitles a window's task.
 @MainActor
 final class PromptController: NSObject, NSTextFieldDelegate {
-    enum Mode { case label(window: Int, frame: CGRect), rename(Group, frame: CGRect) }
+    enum Mode { case label(window: Int, frame: CGRect), rename(Group, frame: CGRect), task(window: Int, frame: CGRect) }
 
     private var panel: PromptPanel?
     private var mode: Mode = .label(window: 0, frame: .zero)
@@ -30,6 +30,9 @@ final class PromptController: NSObject, NSTextFieldDelegate {
             if let g = store.group(forWindow: id) { initialName = g.name; color = g.color } else { color = store.nextFreeColor() }
         case .rename(let g, _):
             initialName = g.name; color = g.color
+        case .task(let id, _):
+            initialName = store.task(forWindow: id) ?? taskProvider?(id) ?? ""
+            color = store.group(forWindow: id)?.color ?? 0
         }
         colorTouched = false
         build(initialName: initialName)
@@ -38,6 +41,7 @@ final class PromptController: NSObject, NSTextFieldDelegate {
     private var others: [Group] {
         let all = Store.shared.groups
         if case .rename(let g, _) = mode { return all.filter { $0.id != g.id } }
+        if case .task = mode { return [] }
         return all
     }
 
@@ -47,7 +51,9 @@ final class PromptController: NSObject, NSTextFieldDelegate {
         let chipH: CGFloat = 32
         let swatchS: CGFloat = 28
         let hasChips = !others.isEmpty
-        let height = pad + StripMetrics.height + 10 + fieldH + 14 + (hasChips ? chipH + 12 : 0) + swatchS + 16 + 18 + pad + 4
+        var isTask = false
+        if case .task = mode { isTask = true }
+        let height = pad + StripMetrics.height + 10 + fieldH + 14 + (hasChips ? chipH + 12 : 0) + (isTask ? 0 : swatchS + 16) + 18 + pad + 4
 
         let p = PromptPanel(contentRect: NSRect(x: 0, y: 0, width: width, height: height))
         let root = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: width, height: height))
@@ -85,7 +91,7 @@ final class PromptController: NSObject, NSTextFieldDelegate {
         field.font = fieldFont
         field.textColor = .white
         field.stringValue = initialName
-        field.placeholderAttributedString = NSAttributedString(string: "Name this window", attributes: [
+        field.placeholderAttributedString = NSAttributedString(string: isTask ? "What is this agent on?" : "Name this window", attributes: [
             .font: fieldFont, .foregroundColor: NSColor(white: 1, alpha: 0.42),
         ])
         field.delegate = self
@@ -112,18 +118,19 @@ final class PromptController: NSObject, NSTextFieldDelegate {
             y -= 12
         }
 
-        y -= swatchS
         swatches = []
-        for i in 0..<Palette.all.count {
+        if !isTask { y -= swatchS + 16 }
+        for i in 0..<(isTask ? 0 : Palette.all.count) {
             let s = SwatchView(index: i, size: swatchS, radius: 8, selectable: true)
-            s.frame.origin = NSPoint(x: pad + CGFloat(i) * (swatchS + 10), y: y)
+            s.frame.origin = NSPoint(x: pad + CGFloat(i) * (swatchS + 10), y: y + 16)
             s.onClick = { [weak self] in self?.setColor(i, touched: true) }
             root.addSubview(s)
             swatches.append(s)
         }
 
-        y -= 16 + 18
-        let hint = NSTextField(labelWithString: "Return to label   Tab to change color   Esc to close")
+        y -= 18
+        let hint = NSTextField(labelWithString: isTask ? "Return to save   Empty uses the Terminal title   Esc to close"
+                                                       : "Return to label   Tab to change color   Esc to close")
         hint.font = Fonts.geist(12, "Medium")
         hint.textColor = NSColor(white: 1, alpha: 0.55)
         hint.frame = NSRect(x: pad + 2, y: y, width: inner - 120, height: 18)
@@ -141,7 +148,7 @@ final class PromptController: NSObject, NSTextFieldDelegate {
         // Center over the target window, clamped to its screen.
         var anchor = NSScreen.main?.visibleFrame ?? .zero
         switch mode {
-        case .label(_, let f), .rename(_, let f): if f != .zero { anchor = Windows.cocoaRect(f) }
+        case .label(_, let f), .rename(_, let f), .task(_, let f): if f != .zero { anchor = Windows.cocoaRect(f) }
         }
         var origin = NSPoint(x: anchor.midX - width / 2, y: anchor.midY - height / 2 + anchor.height * 0.12)
         let screen = NSScreen.screens.first { $0.frame.intersects(anchor) } ?? NSScreen.main
@@ -175,12 +182,19 @@ final class PromptController: NSObject, NSTextFieldDelegate {
 
     private weak var preview: StripView?
     var stateProvider: ((Int) -> (subtitle: String, state: WorkState))?
+    var taskProvider: ((Int) -> String)?
 
     private func updatePreview() {
         var sub = "", st = WorkState.none
         var emoji = ""
         if case .label(let id, _) = mode, let p = stateProvider?(id) { sub = p.subtitle; st = p.state; emoji = Store.shared.emoji(forWindow: id) ?? "" }
         let name = field.stringValue.trimmingCharacters(in: .whitespaces)
+        if case .task(let id, _) = mode {
+            let p = stateProvider?(id)
+            preview?.configure(.init(name: Store.shared.group(forWindow: id)?.name ?? "", emoji: Store.shared.emoji(forWindow: id) ?? "",
+                                     subtitle: name.isEmpty ? (taskProvider?(id) ?? "") : name, color: color, state: p?.state ?? .none))
+            return
+        }
         preview?.configure(.init(name: name.isEmpty ? "Untitled" : name, emoji: emoji, subtitle: sub, color: color, state: st))
     }
 
@@ -212,18 +226,25 @@ final class PromptController: NSObject, NSTextFieldDelegate {
         switch sel {
         case #selector(NSResponder.insertNewline(_:)): submit(); return true
         case #selector(NSResponder.cancelOperation(_:)): close(restoreFocus: true); return true
-        case #selector(NSResponder.insertTab(_:)): setColor(color + 1, touched: true); return true
-        case #selector(NSResponder.insertBacktab(_:)): setColor(color - 1, touched: true); return true
+        case #selector(NSResponder.insertTab(_:)): if case .task = mode { return true }; setColor(color + 1, touched: true); return true
+        case #selector(NSResponder.insertBacktab(_:)): if case .task = mode { return true }; setColor(color - 1, touched: true); return true
         default: return false
         }
     }
 
     private func submit() {
         let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if case .task(let id, _) = mode {
+            // typing the Terminal title back in, or nothing, clears the override
+            Store.shared.setTask(name == taskProvider?(id) ? "" : name, forWindow: id)
+            close(restoreFocus: true)
+            return
+        }
         guard !name.isEmpty else { shake(); return }
         switch mode {
         case .label(let id, _): Store.shared.label(window: id, name: String(name.prefix(40)), color: color, pinned: colorTouched)
         case .rename(let g, _): Store.shared.rename(g, to: String(name.prefix(40)), color: color, pinned: colorTouched)
+        case .task: break
         }
         close(restoreFocus: true)
     }

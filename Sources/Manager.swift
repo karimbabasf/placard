@@ -13,6 +13,7 @@ struct SceneWindow {
 protocol WindowActions: AnyObject {
     func windowMenu(for window: Int, anchor: CGRect) -> NSMenu
     func renameGroup(of window: Int, anchor: CGRect)
+    func renameTask(of window: Int, anchor: CGRect)
     func labelWindow(_ window: Int, anchor: CGRect)
 }
 
@@ -39,14 +40,17 @@ final class ControlPanel: NSPanel {
 
 final class ControlView: NSView {
     enum Kind: Equatable {
-        case name(color: Int)                      // over a visible strip
+        case name(color: Int, nameEnd: CGFloat, chevronEnd: CGFloat)  // over a visible strip: name, chevron, task text
         case handle(color: Int?, initial: String)  // labels hidden, or window not labeled
     }
 
     var kind: Kind = .handle(color: nil, initial: "") { didSet { if kind != oldValue { restyle() } } }
     var onPrimary: (() -> Void)?
     var onMenu: (() -> Void)?
+    var onTask: (() -> Void)?
     private var hovering = false { didSet { restyle() } }
+    private var hoverX: CGFloat = 0 { didSet { if hovering { restyle() } } }
+    private let hoverPad = CALayer()
     private let plus = CAShapeLayer()
     private let letter = CATextLayer()
     private var area: NSTrackingArea?
@@ -59,6 +63,9 @@ final class ControlView: NSView {
         plus.fillColor = nil
         plus.lineWidth = 1.8
         plus.lineCap = .round
+        hoverPad.cornerRadius = 7
+        hoverPad.cornerCurve = .continuous
+        layer?.addSublayer(hoverPad)
         layer?.addSublayer(plus)
         letter.font = Fonts.geist(12, "SemiBold")
         letter.fontSize = 12
@@ -75,19 +82,20 @@ final class ControlView: NSView {
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let area { removeTrackingArea(area) }
-        let a = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self)
+        let a = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways, .inVisibleRect], owner: self)
         addTrackingArea(a)
         area = a
     }
 
     override func mouseEntered(with event: NSEvent) { hovering = true }
     override func mouseExited(with event: NSEvent) { hovering = false }
+    override func mouseMoved(with event: NSEvent) { hoverX = convert(event.locationInWindow, from: nil).x }
     override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
 
     override func mouseDown(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
         switch kind {
-        case .name: p.x > bounds.width - 24 ? onMenu?() : onPrimary?()
+        case .name(_, let ne, let ce): p.x < ne ? onPrimary?() : (p.x < ce ? onMenu?() : onTask?())
         case .handle(let c, _): c == nil ? onPrimary?() : onMenu?()
         }
     }
@@ -106,14 +114,22 @@ final class ControlView: NSView {
         letter.frame = CGRect(x: 0, y: (b.height - 16) / 2 - 1, width: b.width, height: 16)
         letter.contentsScale = window?.backingScaleFactor ?? 2
         switch kind {
-        case .name(let c):
+        case .name(let c, let ne, let ce):
             layer?.contents = nil
             layer?.cornerRadius = 7
+            layer?.backgroundColor = NSColor.clear.cgColor
             let dark = Palette.all[c].darkText
-            layer?.backgroundColor = hovering ? (dark ? NSColor(white: 0, alpha: 0.12) : NSColor(white: 1, alpha: 0.16)).cgColor : NSColor.clear.cgColor
+            // light up only the piece under the pointer: name, chevron, or task text
+            let r: CGRect = hoverX < ne ? CGRect(x: 0, y: 0, width: ne, height: b.height)
+                : hoverX < ce ? CGRect(x: ne, y: 0, width: ce - ne, height: b.height)
+                : CGRect(x: ce, y: 0, width: b.width - ce, height: b.height)
+            hoverPad.frame = r.insetBy(dx: 0, dy: 2)
+            hoverPad.backgroundColor = (dark ? NSColor(white: 0, alpha: 0.12) : NSColor(white: 1, alpha: 0.16)).cgColor
+            hoverPad.isHidden = !hovering
             plus.isHidden = true
             letter.isHidden = true
         case .handle(let c, let initial):
+            hoverPad.isHidden = true
             layer?.cornerRadius = 6
             if let c {
                 layer?.contents = Dither.swatch(size: b.size, color: c)
@@ -269,6 +285,7 @@ final class OverlayManager {
                 let s = Slot()
                 s.control.control.onPrimary = { [weak self] in self?.primary(id) }
                 s.control.control.onMenu = { [weak self] in self?.showMenu(id) }
+                s.control.control.onTask = { [weak self] in guard let self else { return }; self.actions?.renameTask(of: id, anchor: self.anchor(id)) }
                 slots[id] = s
                 return s
             }()
@@ -298,7 +315,7 @@ final class OverlayManager {
             // Strip
             if showStrip, let g = group {
                 let p = parsed[id]
-                slot.strip.strip.configure(.init(name: g.name, emoji: store.emoji(forWindow: id) ?? "", subtitle: p?.subtitle ?? "", color: g.color, state: p?.state ?? .none))
+                slot.strip.strip.configure(.init(name: g.name, emoji: store.emoji(forWindow: id) ?? "", subtitle: store.task(forWindow: id) ?? p?.subtitle ?? "", color: g.color, state: p?.state ?? .none))
                 let target = Windows.cocoaRect(stripCG)
                 if slot.stripFrame != target {
                     slot.strip.setFrame(target, display: false)
@@ -323,7 +340,7 @@ final class OverlayManager {
                 slot.strip.strip.layoutSubtreeIfNeeded()
                 let r = slot.strip.strip.controlRect
                 controlCG = CGRect(x: stripCG.minX + r.minX, y: stripCG.minY + (stripCG.height - r.maxY), width: r.width, height: r.height)
-                slot.control.control.kind = .name(color: g.color)
+                slot.control.control.kind = .name(color: g.color, nameEnd: slot.strip.strip.nameEnd, chevronEnd: slot.strip.strip.chevronEnd)
             } else {
                 let s = Self.handleSize
                 // Right end of the title bar: the only part of it nothing else uses.
@@ -390,7 +407,11 @@ final class OverlayManager {
         burst()
     }
 
-    func state(for id: Int) -> (subtitle: String, state: WorkState) { parsed[id] ?? ("", .none) }
+    func state(for id: Int) -> (subtitle: String, state: WorkState) {
+        let p = parsed[id] ?? ("", .none)
+        return (Store.shared.task(forWindow: id) ?? p.subtitle, p.state)
+    }
+    func terminalTask(for id: Int) -> String { parsed[id]?.subtitle ?? "" }
 
     func refreshInfo() {
         guard !polling, Windows.terminalApp != nil else { return }
