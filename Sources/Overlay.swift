@@ -93,7 +93,7 @@ final class StripView: NSView {
     private let body = CALayer()          // clipped by `shape`
     private let shape = CAShapeLayer()
     private let fill = CALayer()
-    private let shimmer = CALayer()
+    private let shimmer = CAGradientLayer()
     private let nameLayer = CATextLayer()
     private let emojiLayer = CALayer()
     private let subLayer = CATextLayer()
@@ -115,8 +115,11 @@ final class StripView: NSView {
         fill.magnificationFilter = .nearest
         fill.contentsGravity = .resize
         body.addSublayer(fill)
-        shimmer.magnificationFilter = .nearest
-        shimmer.contentsGravity = .resize
+        // A soft band of light, smooth on purpose: a moving dither crawls and reads as flicker.
+        shimmer.startPoint = CGPoint(x: 0, y: 0.5)
+        shimmer.endPoint = CGPoint(x: 1, y: 0.5)
+        shimmer.colors = [NSColor(white: 1, alpha: 0).cgColor, NSColor(white: 1, alpha: 0.16).cgColor, NSColor(white: 1, alpha: 0).cgColor]
+        shimmer.locations = [0, 0.5, 1]
         shimmer.isHidden = true
         body.addSublayer(shimmer)
         emojiLayer.contentsGravity = .resizeAspect
@@ -298,8 +301,8 @@ final class StripView: NSView {
         subLayer.isHidden = model.subtitle.isEmpty || subW < 50
         subLayer.frame = CGRect(x: subX, y: (h - 16) / 2 - 1, width: max(0, subW), height: 16)
 
-        shimmer.frame = CGRect(x: 0, y: 0, width: 140, height: h)
-        if shimmer.contents == nil { shimmer.contents = Dither.shimmer(width: 140, height: h) }
+        shimmer.bounds = CGRect(x: 0, y: 0, width: 220, height: h)
+        shimmer.position.y = h / 2
         if model.state == .working, abs(shimmerWidth - bounds.width) > 1 {
             shimmer.removeAnimation(forKey: "sweep")
             startShimmer()
@@ -315,12 +318,13 @@ final class StripView: NSView {
             let order = [0, 1, 3, 2]
             for (step, idx) in order.enumerated() {
                 let a = CAKeyframeAnimation(keyPath: "opacity")
-                a.values = [1, 0.28, 0.28, 0.28, 1]
+                a.values = [1, 0.3, 0.3, 0.3, 1]
                 a.keyTimes = [0, 0.25, 0.5, 0.75, 1]
-                a.duration = 0.9
-                a.calculationMode = .discrete
+                a.duration = 1.4
+                a.calculationMode = .linear
+                a.timingFunctions = Array(repeating: CAMediaTimingFunction(name: .easeInEaseOut), count: 4)
                 a.repeatCount = .infinity
-                a.timeOffset = 0.9 - Double(step) * 0.225
+                a.timeOffset = 1.4 - Double(step) * 0.35
                 dots[idx].add(a, forKey: "spin")
             }
             startShimmer()
@@ -337,17 +341,17 @@ final class StripView: NSView {
         guard shimmer.animation(forKey: "sweep") == nil, bounds.width > 0 else { return }
         shimmer.isHidden = false
         shimmerWidth = bounds.width
-        let sweep = max(1.4, Double(bounds.width) / 600)
+        let sweep = max(2.4, Double(bounds.width) / 420)
         let a = CABasicAnimation(keyPath: "position.x")
-        a.fromValue = -70
-        a.toValue = bounds.width + 70
+        a.fromValue = -110
+        a.toValue = bounds.width + 110
         a.duration = sweep
         a.timingFunction = CAMediaTimingFunction(controlPoints: 0.45, 0, 0.55, 1)
         let g = CAAnimationGroup()
         g.animations = [a]
-        g.duration = sweep + 1.2
+        g.duration = sweep + 1.6
         g.repeatCount = .infinity
-        shimmer.position.x = -200
+        shimmer.position.x = -300
         shimmer.add(g, forKey: "sweep")
     }
 

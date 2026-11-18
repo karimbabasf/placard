@@ -20,8 +20,14 @@ struct TermWindow {
 enum Windows {
     static let bundleID = "com.apple.Terminal"
 
+    /// runningApplications(withBundleIdentifier:) sometimes comes back empty for a
+    /// moment while Terminal is running, which used to tear down every strip.
+    /// Keep the process until it has really exited.
+    private static var cached: NSRunningApplication?
     static var terminalApp: NSRunningApplication? {
-        NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first
+        if let c = cached, !c.isTerminated, kill(c.processIdentifier, 0) == 0 { return c }
+        cached = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first
+        return cached
     }
 
     /// On-screen windows, front to back: the Terminal ones, plus every window id in z-order.

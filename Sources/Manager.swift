@@ -192,11 +192,9 @@ final class OverlayManager {
         RunLoop.main.add(timer!, forMode: .common)
         let ws = NSWorkspace.shared.notificationCenter
         ws.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                self.quietUntil = Date().addingTimeInterval(0.3)
-                for s in self.slots.values { s.strip.orderOut(nil); s.control.orderOut(nil) }
-            }
+            // With several displays this fires on every click into another display,
+            // so never hide here: just rescan, the on-screen check does the rest.
+            MainActor.assumeIsolated { self?.burst(0.6) }
         }
         ws.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.burst(0.5) }
@@ -237,7 +235,7 @@ final class OverlayManager {
         if ticks % 300 == 0, let alive = Windows.allTerminalIDs() { store.keepOnly(windows: alive) }
 
         guard let tpid = Windows.terminalApp?.processIdentifier else {
-            if !slots.isEmpty { slots.values.forEach { $0.strip.orderOut(nil); $0.control.orderOut(nil) }; slots.removeAll() }
+            if !slots.isEmpty { Log.write("slots cleared: Terminal not found"); slots.values.forEach { $0.strip.orderOut(nil); $0.control.orderOut(nil) }; slots.removeAll() }
             return
         }
         // Terminal windows = what Terminal's scripting reports (skips its Settings
@@ -353,7 +351,7 @@ final class OverlayManager {
             if missing[id]! < 3 && known.contains(id) { continue }
             if s.strip.isVisible { Log.write("strip hidden \(id): window off screen"); s.strip.orderOut(nil) }
             if s.control.isVisible { s.control.orderOut(nil) }
-            if !known.contains(id) { slots.removeValue(forKey: id) }
+            if !known.contains(id) { Log.write("slot dropped \(id)"); slots.removeValue(forKey: id) }
         }
         for (id, s) in slots where store.group(forWindow: id) == nil && s.entered {
             s.entered = false
