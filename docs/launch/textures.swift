@@ -1,5 +1,6 @@
-// Textures for the launch video wall: per window an unlabeled base, a labeled base, and its strip.
-// The hero window also gets a Christmas body sequence. Run: swift textures.swift <outdir>
+// Textures for the launch video: per window an unlabeled base, a labeled base, and its strip in each state.
+// The hero window also gets a Christmas body sequence. UI is drawn about 1.5x so strips read at 1080p.
+// Run: swift textures.swift <outdir>
 import AppKit
 import CoreText
 
@@ -12,8 +13,8 @@ for f in (try? FileManager.default.contentsOfDirectory(at: fontDir, includingPro
 }
 func geist(_ s: CGFloat, _ w: String) -> NSFont { NSFont(name: "Geist-\(w)", size: s)! }
 func pixel(_ s: CGFloat) -> NSFont { NSFont(name: "GeistPixel-Square", size: s)! }
-let mono = NSFont.monospacedSystemFont(ofSize: 15, weight: .regular)
-let emojiFont = NSFont(name: "AppleColorEmoji", size: 20)!
+let mono = NSFont.monospacedSystemFont(ofSize: 19, weight: .regular)
+let emojiFont = NSFont(name: "AppleColorEmoji", size: 28)!
 
 func rgb(_ h: UInt32) -> NSColor {
     NSColor(srgbRed: CGFloat((h >> 16) & 255) / 255, green: CGFloat((h >> 8) & 255) / 255, blue: CGFloat(h & 255) / 255, alpha: 1)
@@ -23,6 +24,13 @@ func mix(_ a: NSColor, _ b: NSColor, _ t: CGFloat) -> NSColor {
     return NSColor(srgbRed: a.redComponent + (b.redComponent - a.redComponent) * t,
                    green: a.greenComponent + (b.greenComponent - a.greenComponent) * t,
                    blue: a.blueComponent + (b.blueComponent - a.blueComponent) * t, alpha: 1)
+}
+// Placard's own YOUR TURN look: 38% chroma, 62% brightness
+func dull(_ c: NSColor) -> NSColor {
+    let c = c.usingColorSpace(.sRGB)!
+    let l = 0.2126 * c.redComponent + 0.7152 * c.greenComponent + 0.0722 * c.blueComponent
+    return NSColor(srgbRed: (l + (c.redComponent - l) * 0.38) * 0.62, green: (l + (c.greenComponent - l) * 0.38) * 0.62,
+                   blue: (l + (c.blueComponent - l) * 0.38) * 0.62, alpha: 1)
 }
 let christmas: [(NSColor, NSColor)] = [
     (rgb(0x9E0A1A), rgb(0x8CFF9E)), (rgb(0x086B2B), rgb(0xFFDB40)), (rgb(0x8C6100), rgb(0xFFFFFF)),
@@ -34,33 +42,29 @@ func christmasAt(_ t: CGFloat) -> (NSColor, NSColor) {
     return (mix(christmas[i].0, christmas[j].0, f), mix(christmas[i].1, christmas[j].1, f))
 }
 
-let palette: [UInt32] = [0xD7263D, 0x1C64F2, 0x82C91E, 0xF59F00, 0x9B5DE5, 0x00B8A9, 0xF15BB5, 0xFF6B1A]
-let jobs: [(String, String, String)] = [
-    ("api", "Refactor the auth middleware", "\u{1F98A}"), ("web", "Pricing page redesign", "\u{1F419}"),
-    ("db", "Add the orders index", "\u{1F422}"), ("ios", "Fix the paywall crash", "\u{1F34E}"),
-    ("docs", "Write the CLI reference", "\u{1F4DA}"), ("billing", "Stripe webhook retries", "\u{1F4B8}"),
-    ("search", "Rank by recency", "\u{1F50E}"), ("ml", "Eval the new reranker", "\u{1F9E0}"),
-    ("ops", "Bump the base image", "\u{1F40B}"), ("cli", "Add --json output", "\u{1F6E0}"),
-    ("sdk", "Ship the v2 types", "\u{1F4E6}"), ("admin", "Bulk user export", "\u{1F5C2}"),
-    ("cron", "Nightly digest job", "\u{23F0}"), ("email", "Welcome sequence copy", "\u{1F48C}"),
-    ("infra", "Rotate the staging certs", "\u{1F344}"), ("edge", "Cache the OG images", "\u{26A1}"),
-    ("perf", "Kill the N+1 on feed", "\u{1F3CE}"), ("tests", "Fix the flaky e2e", "\u{1F9EA}"),
-    ("deps", "Upgrade to React 20", "\u{1F9F9}"), ("ui", "Dark mode tokens", "\u{1F319}"),
-    ("data", "Backfill the events table", "\u{1F4CA}"), ("queue", "Dead letter handling", "\u{1F4EE}"),
-    ("auth", "Passkeys on login", "\u{1F511}"), ("mobile", "Offline sync", "\u{1F4F1}"),
+// back row api, web, docs; front row infra (hero), db
+struct Job { let name, task, emoji: String; let color: UInt32; let darkInk: Bool; let lines: [String] }
+let jobs = [
+    Job(name: "api", task: "Refactor the auth middleware", emoji: "\u{1F98A}", color: 0xD7263D, darkInk: false,
+        lines: ["\u{25CF} Read(src/auth/session.ts)", "  \u{23BF} Read 212 lines", "\u{25CF} Update(src/auth/middleware.ts)",
+                "  \u{23BF} +42 -18", "\u{25CF} Bash(npm test -- auth)", "  \u{23BF} 128 passed", "\u{2733} Thinking about token refresh..."]),
+    Job(name: "web", task: "Pricing page redesign", emoji: "\u{1F419}", color: 0x1C64F2, darkInk: false,
+        lines: ["\u{25CF} Write(app/pricing/page.tsx)", "  \u{23BF} Wrote 186 lines", "\u{25CF} Bash(npm run build)",
+                "  \u{23BF} Compiled in 4.1s", "\u{2713} Done. 3 files changed.", "", "\u{276F} "]),
+    Job(name: "docs", task: "Write the CLI reference", emoji: "\u{1F4DA}", color: 0x9B5DE5, darkInk: false,
+        lines: ["\u{25CF} Read(src/cli/commands.ts)", "\u{25CF} Write(docs/cli.md)", "  \u{23BF} Wrote 340 lines",
+                "\u{25CF} Bash(npx markdownlint docs)", "  \u{23BF} 0 problems", "\u{2733} Adding the examples..."]),
+    Job(name: "infra", task: "Rotate the staging certs", emoji: "\u{1F344}", color: 0x82C91E, darkInk: true,
+        lines: ["\u{25CF} Read(terraform/tls.tf)", "\u{25CF} Bash(terraform plan)", "  \u{23BF} 2 to change",
+                "\u{25CF} Bash(terraform apply -target=module.tls)", "", " Do you want to proceed?", " \u{276F} 1. Yes    2. No"]),
+    Job(name: "db", task: "Add the orders index", emoji: "\u{1F422}", color: 0xF59F00, darkInk: true,
+        lines: ["\u{25CF} Read(db/schema.sql)", "\u{25CF} Write(db/migrations/0042.sql)", "  \u{23BF} CREATE INDEX ...",
+                "\u{25CF} Bash(npm run migrate)", "  \u{23BF} Applied in 1.8s", "\u{2713} Done. Query is 40x faster.", "\u{276F} "]),
 ]
-let HERO = 14  // infra: the one that needs you
-let pool = [
-    "\u{25CF} Read(src/%@/index.ts)", "\u{25CF} Update(src/%@/handler.ts)", "  \u{23BF} +42 -18",
-    "\u{25CF} Bash(npm test -- %@)", "  \u{23BF} 128 passed, 0 failed", "\u{25CF} Grep(\"TODO\", src/%@)",
-    "  \u{23BF} Found 7 matches", "\u{2733} Thinking about the edge cases...", "\u{25CF} Write(src/%@/types.ts)",
-    "  \u{23BF} Wrote 86 lines", "\u{25CF} Task(review the %@ diff)", "\u{25CF} Bash(git diff --stat)",
-    "  \u{23BF} 4 files changed", "\u{25CF} Edit(%@.config.json)", "  \u{23BF} Compiled in 2.3s",
-]
+let HERO = 3
 
-let PW: CGFloat = 800, PH: CGFloat = 500, TB: CGFloat = 40, RAD: CGFloat = 16
-var rng = SystemRandomNumberGenerator()
-struct LCG { var s: UInt64; mutating func next() -> Int { s = s &* 6364136223846793005 &+ 1442695040888963407; return Int(s >> 33) } }
+let PW: CGFloat = 800, PH: CGFloat = 500, TB: CGFloat = 58, RAD: CGFloat = 18
+let SX: CGFloat = 104, SY: CGFloat = 7, SH: CGFloat = 44
 
 func render(_ scale: CGFloat, _ w: CGFloat, _ h: CGFloat, _ name: String, _ body: () -> Void) {
     let W = Int(w * scale), H = Int(h * scale)
@@ -70,82 +74,86 @@ func render(_ scale: CGFloat, _ w: CGFloat, _ h: CGFloat, _ name: String, _ body
     NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
     body()
     NSGraphicsContext.current = nil
-    let rep = NSBitmapImageRep(cgImage: ctx.makeImage()!)
-    try! rep.representation(using: .png, properties: [:])!.write(to: out.appendingPathComponent(name))
+    try! NSBitmapImageRep(cgImage: ctx.makeImage()!).representation(using: .png, properties: [:])!
+        .write(to: out.appendingPathComponent(name))
 }
 func rr(_ r: CGRect, _ rad: CGFloat) -> NSBezierPath { NSBezierPath(roundedRect: r, xRadius: rad, yRadius: rad) }
-func draw(_ t: String, _ f: NSFont, _ c: NSColor, _ p: CGPoint, kern: CGFloat = 0) {
-    NSAttributedString(string: t, attributes: [.font: f, .foregroundColor: c, .kern: kern]).draw(at: p)
+func draw(_ t: String, _ f: NSFont, _ c: NSColor, _ p: CGPoint) {
+    NSAttributedString(string: t, attributes: [.font: f, .foregroundColor: c]).draw(at: p)
 }
 func width(_ t: String, _ f: NSFont) -> CGFloat { (t as NSString).size(withAttributes: [.font: f]).width }
 
 func window(_ i: Int, labeled: Bool, body: NSColor? = nil, ink: NSColor? = nil) {
-    let (name, _, _) = jobs[i]
-    let color = rgb(palette[i % palette.count])
+    let j = jobs[i]
     let frame = CGRect(x: 0, y: 0, width: PW, height: PH)
     rr(frame, RAD).addClip()
-    (body ?? (labeled ? mix(rgb(0x141416), color, 0.16) : rgb(0x18181B))).setFill()
+    (body ?? (labeled ? mix(rgb(0x141416), rgb(j.color), 0.17) : rgb(0x1A1A1D))).setFill()
     frame.fill()
-    rgb(0x2B2B30).setFill()
+    rgb(0x2C2C31).setFill()
     CGRect(x: 0, y: 0, width: PW, height: TB).fill()
     for k in 0..<3 {
         rgb([0xFF5F57, 0xFEBC2E, 0x28C840][k]).setFill()
-        NSBezierPath(ovalIn: CGRect(x: 16 + CGFloat(k) * 21, y: 13, width: 13, height: 13)).fill()
+        NSBezierPath(ovalIn: CGRect(x: 20 + CGFloat(k) * 26, y: 21, width: 16, height: 16)).fill()
     }
     if !labeled {
-        let t = "\u{2733} claude \u{2014} ~/dev/\(name) \u{2014} 120\u{00D7}40"
-        let f = geist(13, "Medium")
-        draw(t, f, rgb(0x8E8E95), CGPoint(x: (PW - width(t, f)) / 2, y: 11))
+        let t = "\u{2733} claude \u{2014} ~/dev \u{2014} 120\u{00D7}40"
+        let f = geist(17, "Medium")
+        draw(t, f, rgb(0x8E8E95), CGPoint(x: (PW - width(t, f)) / 2 + 30, y: 17))
     }
-    var g = LCG(s: UInt64(i * 7919 + 13))
-    let textColor = ink ?? NSColor(white: labeled ? 0.93 : 0.62, alpha: 1)
-    for li in 0..<17 {
-        let line = String(format: pool[g.next() % pool.count], name)
-        draw(line, mono, textColor, CGPoint(x: 22, y: TB + 18 + CGFloat(li) * 25))
+    let textColor = ink ?? NSColor(white: labeled ? 0.93 : 0.66, alpha: 1)
+    for (li, line) in j.lines.enumerated() {
+        draw(line, mono, textColor, CGPoint(x: 28, y: TB + 26 + CGFloat(li) * 34))
     }
+    if j.lines.last == "\u{276F} " { textColor.setFill(); CGRect(x: 52, y: TB + 30 + CGFloat(j.lines.count - 1) * 34, width: 11, height: 22).fill() }
 }
 
-func strip(_ i: Int, status: String) {
-    let (name, task, emoji) = jobs[i]
-    let fill = rgb(palette[i % palette.count])
-    let dark = i % palette.count == 2 || i % palette.count == 3
-    let ink: NSColor = dark ? rgb(0x1A1200) : .white
-    let s = CGRect(x: 0, y: 0, width: PW - 92, height: 32)
-    rr(s, 9).addClip()
+func strip(_ i: Int, _ state: String) {
+    let j = jobs[i]
+    let turn = state == "YOUR TURN"
+    let fill = turn ? dull(rgb(j.color)) : rgb(j.color)
+    let ink: NSColor = turn ? NSColor(white: 1, alpha: 0.86) : (j.darkInk ? rgb(0x1A1200) : .white)
+    let s = CGRect(x: 0, y: 0, width: PW - SX - 8, height: SH)
+    rr(s, 11).addClip()
     let top = mix(fill, .white, 0.12), bot = mix(fill, .black, 0.14)
     for yy in stride(from: 0, to: s.height, by: 1) {
-        mix(top, bot, yy / s.height).setFill()
-        CGRect(x: 0, y: yy, width: s.width, height: 1).fill()
+        mix(top, bot, yy / s.height).setFill(); CGRect(x: 0, y: yy, width: s.width, height: 1).fill()
     }
-    let nf = geist(20, "SemiBold")
-    draw(name, nf, ink, CGPoint(x: 14, y: 3))
-    let nx = 14 + width(name, nf)
+    let nf = geist(28, "SemiBold")
+    draw(j.name, nf, ink, CGPoint(x: 18, y: 4))
+    let nx = 18 + width(j.name, nf)
     let chev = NSBezierPath()
-    chev.move(to: CGPoint(x: nx + 6, y: 14)); chev.line(to: CGPoint(x: nx + 11, y: 19)); chev.line(to: CGPoint(x: nx + 16, y: 14))
-    chev.lineWidth = 2; chev.lineCapStyle = .round
+    chev.move(to: CGPoint(x: nx + 8, y: 19)); chev.line(to: CGPoint(x: nx + 14.5, y: 25.5)); chev.line(to: CGPoint(x: nx + 21, y: 19))
+    chev.lineWidth = 2.6; chev.lineCapStyle = .round
     ink.withAlphaComponent(0.7).setStroke(); chev.stroke()
-    draw(task, geist(14, "Medium"), ink.withAlphaComponent(0.85), CGPoint(x: nx + 26, y: 7))
-    let ex = s.maxX - 36
-    draw(emoji, emojiFont, .white, CGPoint(x: ex, y: 2))
-    let pf = pixel(13)
-    let lx = ex - 10 - width(status, pf)
-    draw(status, pf, ink.withAlphaComponent(0.95), CGPoint(x: lx, y: 9))
+    draw(j.task, geist(19, "Medium"), ink.withAlphaComponent(0.86), CGPoint(x: nx + 34, y: 10))
+    let ex = s.maxX - 46
+    draw(j.emoji, emojiFont, .white, CGPoint(x: ex, y: 3))
+    let pf = pixel(18)
+    let lx = ex - 14 - width(state, pf)
+    draw(state, pf, ink.withAlphaComponent(0.95), CGPoint(x: lx, y: 12))
     for c in 0..<4 {
-        ink.withAlphaComponent(c == 0 || c == 3 ? 1 : 0.35).setFill()
-        CGRect(x: lx - 17 + CGFloat(c % 2) * 6, y: 10 + CGFloat(c / 2) * 6, width: 4, height: 4).fill()
+        ink.withAlphaComponent(turn || c == 0 || c == 3 ? 1 : 0.35).setFill()
+        CGRect(x: lx - 22 + CGFloat(c % 2) * 8, y: 14 + CGFloat(c / 2) * 8, width: 5, height: 5).fill()
     }
 }
 
 for i in jobs.indices {
-    let sc: CGFloat = i == HERO ? 3 : 2
-    render(sc, PW, PH, "w\(i)_a.png") { window(i, labeled: false) }
-    render(sc, PW, PH, "w\(i)_b.png") { window(i, labeled: true) }
-    render(sc, PW - 92, 32, "s\(i).png") { strip(i, status: "WORKING") }
+    render(2.5, PW, PH, "w\(i)_a.png") { window(i, labeled: false) }
+    render(2.5, PW, PH, "w\(i)_b.png") { window(i, labeled: true) }
+    render(2.5, PW - SX - 8, SH, "s\(i)_work.png") { strip(i, "WORKING") }
+    render(2.5, PW - SX - 8, SH, "s\(i)_turn.png") { strip(i, "YOUR TURN") }
 }
-render(3, PW - 92, 32, "s\(HERO)_needs.png") { strip(HERO, status: "NEEDS YOU") }
+render(2.5, PW - SX - 8, SH, "s\(HERO)_needs.png") { strip(HERO, "NEEDS YOU") }
 let cyc = 48
 for f in 0..<cyc {
     let (b, t) = christmasAt(CGFloat(f) / CGFloat(cyc))
-    render(3, PW, PH, String(format: "xmas_%04d.png", f + 1)) { window(HERO, labeled: true, body: b, ink: t) }
+    render(2.5, PW, PH, String(format: "xmas_%04d.png", f + 1)) { window(HERO, labeled: true, body: b, ink: t) }
+}
+// soft drop shadow, 20% larger than a window
+render(1, PW * 1.3, PH * 1.3, "shadow.png") {
+    let sh = NSShadow(); sh.shadowBlurRadius = 60; sh.shadowOffset = .zero; sh.shadowColor = NSColor(white: 0, alpha: 0.9)
+    sh.set()
+    NSColor(white: 0, alpha: 0.9).setFill()
+    rr(CGRect(x: PW * 0.15, y: PH * 0.15, width: PW, height: PH), RAD).fill()
 }
 print("textures in \(out.path)")

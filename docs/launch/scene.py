@@ -1,14 +1,15 @@
-# Blender scene for the launch video, frames 1-205 (60 fps): a wall of 24 Terminal windows, strips slam on,
-# the hero goes NEEDS YOU, the camera whips into its strip. Run: blender -b -P scene.py -- <tex dir> <out dir>
-import bpy, math, random, sys, os
+# Blender scene for the launch video, frames 1-510 at 60 fps: five Terminal windows on a desk, near frontal.
+# Strips ease on one by one, two agents finish and dim, infra needs you and goes Christmas, the camera leans in.
+# Run: blender -b -P scene.py -- <tex dir> <out dir> [--render | frame numbers for stills]
+import bpy, os, sys
 
 argv = sys.argv[sys.argv.index("--") + 1:]
 TEX, OUT = os.path.abspath(argv[0]), os.path.abspath(argv[1])
 os.makedirs(OUT, exist_ok=True)
-N, HERO, COLS = 24, 14, 6
-PX, PY = 8.8, 5.9
-END = 205
-rnd = random.Random(7)
+END, HERO = 510, 3
+LABEL = [150, 182, 214, 246, 278]       # api, web, docs, infra, db
+TURN = {1: 345, 4: 372}                 # web and db finish
+NEEDS = 412
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
 sc = bpy.context.scene
@@ -17,17 +18,16 @@ sc.render.resolution_x, sc.render.resolution_y = 1920, 1080
 sc.render.fps = 60
 sc.frame_start, sc.frame_end = 1, END
 sc.render.use_motion_blur = True
-sc.render.motion_blur_shutter = 0.6
+sc.render.motion_blur_shutter = 0.5
 sc.eevee.taa_render_samples = 48
 sc.view_settings.view_transform = "Standard"
-sc.view_settings.look = "None"
 sc.render.image_settings.file_format = "PNG"
 sc.render.filepath = os.path.join(OUT, "")
 world = bpy.data.worlds.new("w"); sc.world = world
 world.use_nodes = True
-world.node_tree.nodes["Background"].inputs[0].default_value = (0.004, 0.004, 0.006, 1)
+world.node_tree.nodes["Background"].inputs[0].default_value = (0.006, 0.006, 0.008, 1)
 
-# interpolation of the segment that arrives at each key; applied after all keys exist (the prefs default is ignored in -b)
+# interpolation of the segment arriving at each key, applied after all keys exist (-b ignores the prefs default)
 WANT = {}
 def key(target, path, frame, value, interp="BEZIER"):
     setattr(target, path, value)
@@ -35,28 +35,22 @@ def key(target, path, frame, value, interp="BEZIER"):
     full = path if isinstance(target, bpy.types.ID) else f"{target.path_from_id()}.{path}"
     WANT[(target.id_data.name, full, frame)] = interp
 
-def fcurves(idb):
-    ad = idb.animation_data
-    if not ad or not ad.action:
-        return []
-    from bpy_extras import anim_utils
-    cb = anim_utils.action_get_channelbag_for_slot(ad.action, ad.action_slot)
-    return list(cb.fcurves) if cb else []
-
 def apply_interp():
+    from bpy_extras import anim_utils
     for idb in list(bpy.data.objects) + [m.node_tree for m in bpy.data.materials] + list(bpy.data.node_groups):
-        for fc in fcurves(idb):
+        ad = idb.animation_data
+        if not ad or not ad.action:
+            continue
+        cb = anim_utils.action_get_channelbag_for_slot(ad.action, ad.action_slot)
+        for fc in (cb.fcurves if cb else []):
             kps = sorted(fc.keyframe_points, key=lambda k: k.co.x)
             for k in range(1, len(kps)):
-                it = WANT.get((idb.name, fc.data_path, int(round(kps[k].co.x))), "BEZIER")
-                kps[k - 1].interpolation = it
-                if it == "EXPO":
-                    kps[k - 1].easing = "EASE_IN"
+                kps[k - 1].interpolation = WANT.get((idb.name, fc.data_path, int(round(kps[k].co.x))), "BEZIER")
 
 def img(name):
     return bpy.data.images.load(os.path.join(TEX, name))
 
-def plane(name, w, h):
+def plane(name, w, h, parent=None):
     me = bpy.data.meshes.new(name)
     me.from_pydata([(-w / 2, -h / 2, 0), (w / 2, -h / 2, 0), (w / 2, h / 2, 0), (-w / 2, h / 2, 0)], [], [(0, 1, 2, 3)])
     uv = me.uv_layers.new()
@@ -64,19 +58,17 @@ def plane(name, w, h):
         uv.data[i].uv = c
     ob = bpy.data.objects.new(name, me)
     sc.collection.objects.link(ob)
+    ob.parent = parent
     return ob
 
-# shared clock for the working sweep
 clock = bpy.data.node_groups.new("Clock", "ShaderNodeTree")
 clock.interface.new_socket("t", in_out="OUTPUT", socket_type="NodeSocketFloat")
-cv = clock.nodes.new("ShaderNodeValue")
-go = clock.nodes.new("NodeGroupOutput")
+cv = clock.nodes.new("ShaderNodeValue"); go = clock.nodes.new("NodeGroupOutput")
 clock.links.new(cv.outputs[0], go.inputs[0])
 key(cv.outputs[0], "default_value", 1, 0.0, "LINEAR")
 key(cv.outputs[0], "default_value", END, float(END), "LINEAR")
 
-def material(name, images, seq=None):
-    """Emission of a stack of images; mix sockets pick which one shows. Returns (mat, mix inputs, strength input, alpha mult)."""
+def material(name, images, seq=None, sweep=False):
     m = bpy.data.materials.new(name)
     m.use_nodes = True
     m.surface_render_method = "DITHERED"
@@ -87,7 +79,7 @@ def material(name, images, seq=None):
     for im in images:
         t = n.new("ShaderNodeTexImage"); t.image = im; t.interpolation = "Cubic"; texs.append(t)
     if seq:
-        t = n.new("ShaderNodeTexImage"); t.image = seq[0]
+        t = n.new("ShaderNodeTexImage"); t.image = seq[0]; t.interpolation = "Cubic"
         t.image_user.frame_duration = seq[1]; t.image_user.frame_start = seq[2]
         t.image_user.use_cyclic = True; t.image_user.use_auto_refresh = True
         texs.append(t)
@@ -99,122 +91,104 @@ def material(name, images, seq=None):
         mx.inputs[0].default_value = 0
         col = mx.outputs[2]; mixes.append(mx.inputs[0])
     em = n.new("ShaderNodeEmission")
-    L.new(col, em.inputs["Color"]); em.inputs["Strength"].default_value = 0
+    if sweep:
+        g = n.new("ShaderNodeGroup"); g.node_tree = clock
+        oi = n.new("ShaderNodeObjectInfo"); tc = n.new("ShaderNodeTexCoord"); sep = n.new("ShaderNodeSeparateXYZ")
+        L.new(tc.outputs["UV"], sep.inputs[0])
+        m1 = n.new("ShaderNodeMath"); m1.operation = "MULTIPLY_ADD"
+        L.new(g.outputs[0], m1.inputs[0]); m1.inputs[1].default_value = 0.008; L.new(oi.outputs["Random"], m1.inputs[2])
+        fr = n.new("ShaderNodeMath"); fr.operation = "FRACT"; L.new(m1.outputs[0], fr.inputs[0])
+        pos = n.new("ShaderNodeMath"); pos.operation = "MULTIPLY_ADD"
+        L.new(fr.outputs[0], pos.inputs[0]); pos.inputs[1].default_value = 2.2; pos.inputs[2].default_value = -0.6
+        d = n.new("ShaderNodeMath"); d.operation = "SUBTRACT"; L.new(sep.outputs[0], d.inputs[0]); L.new(pos.outputs[0], d.inputs[1])
+        a = n.new("ShaderNodeMath"); a.operation = "ABSOLUTE"; L.new(d.outputs[0], a.inputs[0])
+        s = n.new("ShaderNodeMapRange"); s.inputs[1].default_value = 0; s.inputs[2].default_value = 0.14
+        s.inputs[3].default_value = 0.22; s.inputs[4].default_value = 0
+        L.new(a.outputs[0], s.inputs[0])
+        # the sweep only shows while working: scale it by an animated amount
+        amt = n.new("ShaderNodeMath"); amt.operation = "MULTIPLY"; amt.inputs[1].default_value = 1
+        L.new(s.outputs[0], amt.inputs[0])
+        add = n.new("ShaderNodeMix"); add.data_type = "RGBA"; add.blend_type = "ADD"
+        L.new(amt.outputs[0], add.inputs[0]); L.new(col, add.inputs[6]); add.inputs[7].default_value = (1, 1, 1, 1)
+        col = add.outputs[2]
+        sweep = amt.inputs[1]
+    L.new(col, em.inputs["Color"]); em.inputs["Strength"].default_value = 1
     amul = n.new("ShaderNodeMath"); amul.operation = "MULTIPLY"; amul.inputs[1].default_value = 1
     L.new(texs[0].outputs["Alpha"], amul.inputs[0])
-    tr = n.new("ShaderNodeBsdfTransparent")
-    mix = n.new("ShaderNodeMixShader")
+    tr = n.new("ShaderNodeBsdfTransparent"); mix = n.new("ShaderNodeMixShader")
     L.new(amul.outputs[0], mix.inputs[0]); L.new(tr.outputs[0], mix.inputs[1]); L.new(em.outputs[0], mix.inputs[2])
     L.new(mix.outputs[0], outn.inputs["Surface"])
-    return m, mixes, em.inputs["Strength"], amul.inputs[1], (n, L, col, em)
+    return m, mixes, em.inputs["Strength"], amul.inputs[1], sweep
 
-def add_sweep(parts):
-    n, L, col, em = parts
-    g = n.new("ShaderNodeGroup"); g.node_tree = clock
-    oi = n.new("ShaderNodeObjectInfo")
-    tc = n.new("ShaderNodeTexCoord"); sep = n.new("ShaderNodeSeparateXYZ")
-    L.new(tc.outputs["UV"], sep.inputs[0])
-    m1 = n.new("ShaderNodeMath"); m1.operation = "MULTIPLY_ADD"
-    L.new(g.outputs[0], m1.inputs[0]); m1.inputs[1].default_value = 0.011; L.new(oi.outputs["Random"], m1.inputs[2])
-    fr = n.new("ShaderNodeMath"); fr.operation = "FRACT"; L.new(m1.outputs[0], fr.inputs[0])
-    pos = n.new("ShaderNodeMath"); pos.operation = "MULTIPLY_ADD"
-    L.new(fr.outputs[0], pos.inputs[0]); pos.inputs[1].default_value = 2.0; pos.inputs[2].default_value = -0.5
-    d = n.new("ShaderNodeMath"); d.operation = "SUBTRACT"; L.new(sep.outputs[0], d.inputs[0]); L.new(pos.outputs[0], d.inputs[1])
-    a = n.new("ShaderNodeMath"); a.operation = "ABSOLUTE"; L.new(d.outputs[0], a.inputs[0])
-    s = n.new("ShaderNodeMapRange"); s.inputs[1].default_value = 0; s.inputs[2].default_value = 0.16
-    s.inputs[3].default_value = 0.35; s.inputs[4].default_value = 0
-    L.new(a.outputs[0], s.inputs[0])
-    add = n.new("ShaderNodeMix"); add.data_type = "RGBA"; add.blend_type = "ADD"
-    L.new(s.outputs[0], add.inputs[0]); L.new(col, add.inputs[6]); add.inputs[7].default_value = (1, 1, 1, 1)
-    L.new(add.outputs[2], em.inputs["Color"])
-
-# slam order: accelerating, hero lands mid-way as WORKING
-order = [i for i in range(N) if i != HERO]
-rnd.shuffle(order)
-order.insert(9, HERO)
-times = {w: round(58 + 84 * (k / (N - 1)) ** 0.62) for k, w in enumerate(order)}
-NEEDS = 152
-
-xmas = bpy.data.images.load(os.path.join(TEX, "xmas_0001.png")); xmas.source = "SEQUENCE"
-wins = {}
-for i in range(N):
-    r, c = divmod(i, COLS)
-    x, y = (c - (COLS - 1) / 2) * PX, ((4 - 1) / 2 - r) * PY
-    z = rnd.uniform(-0.7, 0.7) if i != HERO else 0.4
-    ob = plane(f"win{i}", 8, 5)
-    ob.location = (x, y, z)
-    ob.rotation_euler = (rnd.uniform(-0.03, 0.03), rnd.uniform(-0.04, 0.04), rnd.uniform(-0.012, 0.012))
+# desk layout: back row three, front row two in front, every title bar visible
+POS = [(-8.3, 2.3, 0.0), (0.0, 2.6, 0.15), (8.3, 2.2, 0.05), (-4.2, -2.5, 0.9), (4.4, -2.3, 0.7)]
+# the desk stands up as a wall facing -Y, so the camera keeps a clean world-Z up axis
+desk = bpy.data.objects.new("desk", None); sc.collection.objects.link(desk)
+desk.rotation_euler = (1.5707963, 0, 0)
+def D(v):
+    return (v[0], -v[2], v[1])
+shadow = img("shadow.png")
+xmas = img("xmas_0001.png"); xmas.source = "SEQUENCE"
+for i, (x, y, z) in enumerate(POS):
+    win = plane(f"win{i}", 8, 5, desk)
+    win.location = (x, y, z)
     seq = (xmas, 48, NEEDS) if i == HERO else None
     m, mixes, stren, _, _ = material(f"mw{i}", [img(f"w{i}_a.png"), img(f"w{i}_b.png")], seq)
-    ob.data.materials.append(m)
-    # fade up from black, a sweep from the right
-    delay = int((COLS - 1 - c) * 5 + r * 3)
+    win.data.materials.append(m)
+    sh = plane(f"sh{i}", 10.4, 6.5, win); sh.location = (0, -0.35, -0.04)
+    sm, _, sstr, _, _ = material(f"msh{i}", [shadow])
+    sh.data.materials.append(sm)
+    sstr.default_value = 0
+    t = LABEL[i]
+    # windows fade up together, gently staggered
     key(stren, "default_value", 1, 0.0)
-    key(stren, "default_value", 8 + delay, 0.0)
-    key(stren, "default_value", 34 + delay, 0.85)
-    t = times[i]
-    key(mixes[0], "default_value", 1, 0.0, "CONSTANT")
-    key(mixes[0], "default_value", t, 1.0, "CONSTANT")
-    key(stren, "default_value", t - 1, 0.85)
-    key(stren, "default_value", t, 1.9)
-    key(stren, "default_value", t + 12, 1.0)
-    # impact kick
-    key(ob, "location", t - 1, (x, y, z))
-    key(ob, "location", t + 1, (x, y, z - 0.25))
-    key(ob, "location", t + 9, (x, y, z))
+    key(stren, "default_value", 4 + i * 4, 0.0)
+    key(stren, "default_value", 40 + i * 4, 1.0)
+    # body takes the group tint as the strip lands
+    key(mixes[0], "default_value", t, 0.0)
+    key(mixes[0], "default_value", t + 20, 1.0)
+    # strip: fades in while it settles down onto the title bar
+    st = plane(f"strip{i}", 6.88, 0.44, win)
+    imgs = [img(f"s{i}_work.png"), img(f"s{i}_turn.png")] + ([img(f"s{i}_needs.png")] if i == HERO else [])
+    stm, smix, _, salpha, sweep = material(f"ms{i}", imgs, sweep=True)
+    st.data.materials.append(stm)
+    home = (0.48, 2.21, 0.01)
+    key(st, "location", t, (home[0], home[1] + 0.22, 0.25))
+    key(st, "location", t + 22, home)
+    key(salpha, "default_value", t, 0.0)
+    key(salpha, "default_value", t + 16, 1.0)
+    if i in TURN:
+        key(smix[0], "default_value", TURN[i], 0.0)
+        key(smix[0], "default_value", TURN[i] + 14, 1.0)
+        key(sweep, "default_value", TURN[i], 1.0)
+        key(sweep, "default_value", TURN[i] + 14, 0.0)
     if i == HERO:
         key(mixes[1], "default_value", 1, 0.0, "CONSTANT")
         key(mixes[1], "default_value", NEEDS, 1.0, "CONSTANT")
-        key(stren, "default_value", NEEDS - 1, 1.0)
-        key(stren, "default_value", NEEDS, 2.4)
-        key(stren, "default_value", NEEDS + 14, 1.15)
+        key(smix[1], "default_value", NEEDS - 1, 0.0)
+        key(smix[1], "default_value", NEEDS + 6, 1.0)
+        key(sweep, "default_value", NEEDS, 1.0)
+        key(sweep, "default_value", NEEDS + 6, 0.0)
     else:
-        key(stren, "default_value", NEEDS + 2, 1.0)
-        key(stren, "default_value", NEEDS + 22, 0.28)
-    # the strip
-    st = plane(f"strip{i}", 7.08, 0.32)
-    st.parent = ob
-    st.rotation_euler = (0, 0, 0)
-    imgs = [img(f"s{i}.png")] + ([img(f"s{i}_needs.png")] if i == HERO else [])
-    sm, smix, sstren, salpha, parts = material(f"ms{i}", imgs)
-    add_sweep(parts)
-    st.data.materials.append(sm)
-    home = (0.46, 2.3, 0.012)
-    key(st, "location", t - 7, (home[0] + 0.3, home[1] + 0.5, 3.2))
-    key(st, "location", t, home, "QUAD")
-    key(st, "scale", t - 7, (1.5, 1.5, 1))
-    key(st, "scale", t, (1, 1, 1), "QUAD")
-    key(st, "scale", t + 2, (1.04, 1.15, 1))
-    key(st, "scale", t + 6, (1, 1, 1))
-    key(salpha, "default_value", 1, 0.0, "CONSTANT")
-    key(salpha, "default_value", t - 7, 1.0, "CONSTANT")
-    key(sstren, "default_value", 1, 1.0)
-    key(sstren, "default_value", t, 2.6)
-    key(sstren, "default_value", t + 10, 1.05)
-    if i == HERO:
-        key(smix[0], "default_value", 1, 0.0, "CONSTANT")
-        key(smix[0], "default_value", NEEDS, 1.0, "CONSTANT")
-    wins[i] = (x, y, z)
+        key(stren, "default_value", NEEDS + 4, 1.0)
+        key(stren, "default_value", NEEDS + 34, 0.45)
 
-# camera: slow push across the wall, then a whip into the hero strip
-cam_data = bpy.data.cameras.new("cam"); cam_data.lens = 32
-cam_data.dof.use_dof = True; cam_data.dof.aperture_fstop = 1.6
-cam = bpy.data.objects.new("cam", cam_data); sc.collection.objects.link(cam); sc.camera = cam
+# camera: a slow drift, then a calm lean toward infra when it needs you
+cd = bpy.data.cameras.new("cam"); cd.lens = 50
+cd.dof.use_dof = True; cd.dof.aperture_fstop = 4.0
+cam = bpy.data.objects.new("cam", cd); sc.collection.objects.link(cam); sc.camera = cam
 tgt = bpy.data.objects.new("tgt", None); sc.collection.objects.link(tgt)
 con = cam.constraints.new("TRACK_TO"); con.target = tgt; con.track_axis = "TRACK_NEGATIVE_Z"; con.up_axis = "UP_Y"
-cam_data.dof.focus_object = tgt
-hx, hy, hz = wins[HERO]
-sx, sy = hx + 0.46, hy + 2.3
-key(cam, "location", 1, (17, -24, 33))
-key(tgt, "location", 1, (5, 1, 0))
-key(cam, "location", 140, (7, -16, 25))
-key(tgt, "location", 140, (-1, -1, 0))
-key(cam, "location", NEEDS + 10, (hx + 3, hy - 9, 16))
-key(tgt, "location", NEEDS + 10, (hx, hy + 0.8, hz))
-key(cam, "location", NEEDS + 26, (sx + 0.6, sy - 2.6, hz + 5), "SINE")
-key(tgt, "location", NEEDS + 26, (sx, sy, hz), "SINE")
-key(cam, "location", END, (sx - 1.0, sy, hz + 0.3), "EXPO")
-key(tgt, "location", END, (sx - 1.0, sy + 0.001, hz), "EXPO")
+cd.dof.focus_object = tgt
+key(cam, "location", 1, D((1.6, -3.0, 45.0)))
+key(tgt, "location", 1, D((0.4, 2.2, 0.0)))
+key(cam, "location", NEEDS, D((-0.8, -2.4, 42.0)), "LINEAR")
+key(tgt, "location", NEEDS, D((0.0, 2.0, 0.3)), "LINEAR")
+hx, hy, hz = POS[HERO]
+key(cam, "location", 492, D((hx + 0.9, hy - 2.8, 29.0)))
+key(tgt, "location", 492, D((hx + 0.6, hy + 2.4, hz)))
+key(cam, "location", END, D((hx + 0.85, hy - 2.7, 28.4)))
+key(tgt, "location", END, D((hx + 0.6, hy + 2.4, hz)))
 apply_interp()
 
 if "--render" in argv:
