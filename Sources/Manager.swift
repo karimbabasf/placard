@@ -218,6 +218,13 @@ final class OverlayManager {
         NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp, .rightMouseDown, .keyDown]) { [weak self] _ in
             MainActor.assumeIsolated { self?.burst() }
         }
+        // A Placard that was killed mid-flash left these windows in flash colors:
+        // the first tick puts them back.
+        let stuck = Store.shared.flashing
+        if !stuck.isEmpty {
+            TerminalScript.killStrayFlashes()
+            haywireDirty = Set(stuck)
+        }
         refreshInfo()
     }
 
@@ -254,6 +261,12 @@ final class OverlayManager {
             if !slots.isEmpty { Log.write("slots cleared: Terminal not found"); slots.values.forEach { $0.strip.orderOut(nil); $0.control.orderOut(nil) }; slots.removeAll() }
             return
         }
+        // Stop a flash the moment its window stops waiting, on screen or not.
+        for id in haywireDirty where !wantsFlash(id) {
+            if let run = haywireRuns[id] { run.cancel() } else { endHaywire(id) }
+        }
+        if !haywireDirty.isEmpty && ticks % 15 == 0 { watchFlashing() }   // 4 Hz, only while one flashes
+
         // Terminal windows = what Terminal's scripting reports (skips its Settings
         // window), plus anything labeled.
         let now = CACurrentMediaTime()
@@ -292,9 +305,7 @@ final class OverlayManager {
             if quiet { slot.strip.orderOut(nil); slot.control.orderOut(nil); continue }
 
             // Christmas mode only while the agent waits on you.
-            let wantHaywire = store.flash && parsed[id]?.state == .needsYou
-            if wantHaywire { startHaywire(id) }
-            else if haywireDirty.contains(id) && !haywireRunning.contains(id) { endHaywire(id) }
+            if wantsFlash(id) { startHaywire(id) }
 
             let group = store.group(forWindow: id)
             let showStrip = group != nil && !hidden
@@ -416,14 +427,53 @@ final class OverlayManager {
     func refreshInfo() {
         guard !polling, Windows.terminalApp != nil else { return }
         polling = true
+        let began = CACurrentMediaTime()
         TerminalScript.titles { [weak self] map in
             guard let self else { return }
             self.polling = false
             self.info = map
-            self.parsed = map.mapValues { (TerminalScript.subtitle(from: $0.title), TerminalScript.state(title: $0.title, busy: $0.busy, prompt: $0.prompt)) }
+            self.pollBegan = began
+            var next = map.mapValues { (subtitle: TerminalScript.subtitle(from: $0.title), state: TerminalScript.state(title: $0.title, busy: $0.busy, prompt: $0.prompt)) }
+            // This poll takes about a second. Where the watch looked after it began,
+            // the watch's answer is the newer one.
+            for (id, at) in self.watchedAt where at > began {
+                if let seen = self.parsed[id]?.state { next[id]?.state = seen }
+            }
+            for (id, p) in next { self.noteState(id, p.state) }
+            self.parsed = next
             self.autoLabel()
             self.applyTints()
         }
+    }
+
+    /// The quick look at the flashing windows only: the full poll is too slow
+    /// to stop a flash on time.
+    private func watchFlashing() {
+        guard !watching else { return }
+        watching = true
+        let began = CACurrentMediaTime()
+        let ids = Array(haywireDirty)
+        TerminalScript.watch(ids) { [weak self] seen in
+            guard let self else { return }
+            self.watching = false
+            // Failed, or a full poll that began later has already landed: drop it.
+            guard let seen, began > self.pollBegan else { return }
+            let now = CACurrentMediaTime()
+            for id in ids {
+                let state = seen[id].map { TerminalScript.state(title: $0.title, busy: self.info[id]?.busy ?? false, prompt: $0.prompt) } ?? .none
+                let subtitle = seen[id].map { TerminalScript.subtitle(from: $0.title) } ?? self.parsed[id]?.subtitle ?? ""
+                self.watchedAt[id] = now
+                self.parsed[id] = (subtitle, state)
+                self.noteState(id, state)
+            }
+        }
+    }
+
+    /// Stamps the moment a flashing window stopped waiting, for the log.
+    private func noteState(_ id: Int, _ state: WorkState) {
+        guard haywireDirty.contains(id) else { return }
+        if state == .needsYou { clearedAt[id] = nil }
+        else if clearedAt[id] == nil { clearedAt[id] = CACurrentMediaTime() }
     }
 
     /// The moment an agent window gets a real task title, it gets a label.
@@ -444,8 +494,10 @@ final class OverlayManager {
         for id in store.labeledWindows {
             guard let g = store.group(forWindow: id), let current = info[id]?.bg else { continue }
             if !store.tint || store.hidden { restoreBackground(id); continue }
+            // A reading taken during a flash, or before its restore landed, is a
+            // flash color: never keep it as the original, never tint from it.
+            if haywireDirty.contains(id) || pollBegan < (cleanSince[id] ?? 0) { continue }
             if store.original(for: id) == nil { store.setOriginal(current, for: id) }
-            if haywireDirty.contains(id) { continue }
             let want = Palette.tint(g.color, over: store.original(for: id) ?? current)
             // Terminal rounds colors on the way back; only write on a real change.
             let off = zip(current, want).map { abs($0 - $1) }.max() ?? .max
@@ -455,35 +507,49 @@ final class OverlayManager {
 
     // MARK: Christmas mode: the window's background and text cycle colors.
 
-    private var haywireRunning = Set<Int>()
-    private var haywireDirty = Set<Int>()
+    private var haywireRuns: [Int: TerminalScript.Flash] = [:]   // the cycle running now, per window
+    private var haywireDirty = Set<Int>()                        // windows whose colors are not their own
+    private var watching = false
+    private var pollBegan: CFTimeInterval = 0                    // when the poll behind `info` started
+    private var watchedAt: [Int: CFTimeInterval] = [:]           // last watch answer per window
+    private var clearedAt: [Int: CFTimeInterval] = [:]           // when a flashing window stopped waiting
+    private var cleanSince: [Int: CFTimeInterval] = [:]          // when a window's restore landed
+
+    private func wantsFlash(_ id: Int) -> Bool { Store.shared.flash && parsed[id]?.state == .needsYou }
 
     private func startHaywire(_ id: Int) {
-        guard !haywireRunning.contains(id), let i = info[id] else { return }
-        let store = Store.shared
-        if store.originalColors(for: id) == nil {
-            let bg = store.original(for: id) ?? i.bg
-            store.setOriginalColors(bg + i.fg + i.bold, for: id)
+        guard haywireRuns[id] == nil else { return }
+        if haywireDirty.insert(id).inserted {
+            Store.shared.setFlashing(id, true)
+            Log.write("flash start \(id)")
         }
-        haywireRunning.insert(id)
-        haywireDirty.insert(id)
-        TerminalScript.haywire(id) { [weak self] in self?.haywireRunning.remove(id) }
+        clearedAt[id] = nil
+        haywireRuns[id] = TerminalScript.haywire(id) { [weak self] in
+            guard let self else { return }
+            self.haywireRuns[id] = nil
+            if !self.wantsFlash(id) { self.endHaywire(id) }
+        }
     }
 
     private func endHaywire(_ id: Int) {
-        haywireDirty.remove(id)
+        guard haywireDirty.remove(id) != nil else { return }
         let store = Store.shared
-        guard let o = store.originalColors(for: id), o.count == 9 else { return }
-        var bg = Array(o[0..<3])
-        if let g = store.group(forWindow: id), store.tint, !store.hidden {
-            if store.original(for: id) == nil { store.setOriginal(bg, for: id) }
-            bg = Palette.tint(g.color, over: bg)
+        store.setFlashing(id, false)
+        cleanSince[id] = .infinity
+        var bg = store.original(for: id)
+        if let g = store.group(forWindow: id), store.tint, !store.hidden, let base = bg { bg = Palette.tint(g.color, over: base) }
+        let cleared = clearedAt.removeValue(forKey: id)
+        TerminalScript.restoreColors(id, bg: bg) { [weak self] _ in
+            let now = CACurrentMediaTime()
+            self?.cleanSince[id] = now
+            Log.write("flash stop \(id)" + (cleared.map { ", colors back \(Int((now - $0) * 1000)) ms after the prompt went" } ?? ""))
         }
-        TerminalScript.setColors(id, bg: bg, fg: Array(o[3..<6]), bold: Array(o[6..<9]))
-        store.setOriginalColors(nil, for: id)
     }
 
-    func restoreAllHaywire() { for id in haywireDirty { endHaywire(id) } }
+    func restoreAllHaywire() {
+        for run in haywireRuns.values { run.cancel() }
+        for id in haywireDirty { endHaywire(id) }
+    }
 
     func restoreBackground(_ id: Int) {
         guard let orig = Store.shared.original(for: id) else { return }

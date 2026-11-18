@@ -58,6 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Window
     func applicationWillTerminate(_ notification: Notification) {
         overlays.restoreAllHaywire()
         overlays.restoreAll()
+        TerminalScript.drain()
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {

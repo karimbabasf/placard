@@ -78,6 +78,8 @@ osascript -e 'tell application "Terminal" to get id of every window'
 open -g "placard://label?window=<id>&name=Test"
 ```
 
+`python3 tests/flash-latency.py` checks Christmas mode end to end: it opens a scratch window that imitates a prompt, answers it three times, and fails unless the window's own colors are back within a second each time.
+
 The hero above is rendered by code, not recorded. `docs/make-hero.sh` draws the frames in `docs/hero.swift`, runs the strips through a 4x4 Bayer dither, and encodes the GIF with ffmpeg.
 
 ## Limits

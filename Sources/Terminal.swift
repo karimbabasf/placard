@@ -97,7 +97,9 @@ enum Windows {
 enum TerminalScript {
     private static let queue = DispatchQueue(label: "placard.osascript")
 
-    static func run(_ source: String, completion: (@MainActor (String?) -> Void)? = nil) {
+    /// Scripts line up on one queue by default; pass `haywireQueue` for one that
+    /// must not wait behind the one-second status poll.
+    static func run(_ source: String, on queue: DispatchQueue = queue, completion: (@MainActor (String?) -> Void)? = nil) {
         guard Windows.terminalApp != nil else {
             if let completion { Task { @MainActor in completion(nil) } }
             return
@@ -128,7 +130,17 @@ enum TerminalScript {
 
     static func list(_ ints: [Int]) -> String { "{" + ints.map(String.init).joined(separator: ", ") + "}" }
 
-    struct Info { let title: String; let bg: [Int]; let busy: Bool; let prompt: Bool; let fg: [Int]; let bold: [Int] }
+    struct Info { let title: String; let bg: [Int]; let busy: Bool; let prompt: Bool }
+
+    /// AppleScript: sets `flag` to "1" when window `w`, titled `n`, shows a Claude prompt.
+    private static let promptCheck = """
+              set flag to "0"
+              if n contains (character id 10035) then
+                set c to contents of selected tab of w
+                if length of c > 3000 then set c to text -3000 thru -1 of c
+                if c contains "Do you want to" or c contains "Would you like to proceed" or c contains "Enter to select" or c contains "Esc to cancel" then set flag to "1"
+              end if
+    """
 
     /// Each window's id, title, busy flag and first-tab background color.
     static func titles(_ completion: @escaping @MainActor ([Int: Info]) -> Void) {
@@ -139,16 +151,10 @@ enum TerminalScript {
           set out to ""
           repeat with w in windows
             try
-              set flag to "0"
-              if (name of w) contains (character id 10035) then
-                set c to contents of selected tab of w
-                if length of c > 3000 then set c to text -3000 thru -1 of c
-                if c contains "Do you want to" or c contains "Would you like to proceed" or c contains "Enter to select" or c contains "Esc to cancel" then set flag to "1"
-              end if
+              set n to name of w
+        \(promptCheck)
               set bg to background color of tab 1 of w
-              set fg to normal text color of tab 1 of w
-              set bd to bold text color of tab 1 of w
-              set out to out & (id of w) & T & (name of w) & T & (item 1 of bg) & "," & (item 2 of bg) & "," & (item 3 of bg) & T & (busy of selected tab of w) & T & flag & T & (item 1 of fg) & "," & (item 2 of fg) & "," & (item 3 of fg) & T & (item 1 of bd) & "," & (item 2 of bd) & "," & (item 3 of bd) & NL
+              set out to out & (id of w) & T & n & T & (item 1 of bg) & "," & (item 2 of bg) & "," & (item 3 of bg) & T & (busy of selected tab of w) & T & flag & NL
             end try
           end repeat
           return out
@@ -158,11 +164,40 @@ enum TerminalScript {
             var map: [Int: Info] = [:]
             for line in (text ?? "").split(separator: "\n") {
                 let parts = line.components(separatedBy: "\t")
-                guard parts.count >= 7, let id = Int(parts[0]) else { continue }
+                guard parts.count >= 5, let id = Int(parts[0]) else { continue }
                 let bg = parts[2].split(separator: ",").compactMap { Int($0) }
-                let fg = parts[5].split(separator: ",").compactMap { Int($0) }
-                let bold = parts[6].split(separator: ",").compactMap { Int($0) }
-                map[id] = Info(title: parts[1], bg: bg, busy: parts[3] == "true", prompt: parts[4] == "1", fg: fg, bold: bold)
+                map[id] = Info(title: parts[1], bg: bg, busy: parts[3] == "true", prompt: parts[4] == "1")
+            }
+            completion(map)
+        }
+    }
+
+    /// Title and prompt flag of just these windows, off the slow poll's queue: the
+    /// quick look that stops a flash. nil when the script failed; a closed window is absent.
+    static func watch(_ ids: [Int], _ completion: @escaping @MainActor ([Int: (title: String, prompt: Bool)]?) -> Void) {
+        let src = """
+        set T to character id 9
+        set NL to character id 10
+        tell application "Terminal"
+          set out to ""
+          repeat with i in \(list(ids))
+            try
+              set w to window id (i as integer)
+              set n to name of w
+        \(promptCheck)
+              set out to out & (i as integer) & T & n & T & flag & NL
+            end try
+          end repeat
+          return out
+        end tell
+        """
+        run(src, on: haywireQueue) { text in
+            guard let text else { completion(nil); return }
+            var map: [Int: (title: String, prompt: Bool)] = [:]
+            for line in text.split(separator: "\n") {
+                let parts = line.components(separatedBy: "\t")
+                guard parts.count >= 3, let id = Int(parts[0]) else { continue }
+                map[id] = (parts[1], parts[2] == "1")
             }
             completion(map)
         }
@@ -231,14 +266,53 @@ enum TerminalScript {
         return out
     }()
 
-    private static let haywireQueue = DispatchQueue(label: "placard.haywire", attributes: .concurrent)
+    static let haywireQueue = DispatchQueue(label: "placard.haywire", attributes: .concurrent)
 
-    /// One ~1.3 s run of the color cycle on every tab of a window; the manager
+    /// A running color cycle that can be cut short.
+    final class Flash: @unchecked Sendable {
+        private let lock = NSLock()
+        private var process: Process?
+        private var cancelled = false
+
+        func cancel() {
+            lock.lock(); cancelled = true; let p = process; lock.unlock()
+            if let p, p.isRunning { p.terminate() }
+        }
+
+        fileprivate func launch(_ p: Process) -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            guard !cancelled, (try? p.run()) != nil else { return false }
+            process = p
+            return true
+        }
+    }
+
+    /// Marks the flash script's command line so strays can be found.
+    private static let flashMarker = "placard-flash"
+
+    /// A Placard that was killed leaves its flash scripts running, and they
+    /// would repaint over the restore.
+    static func killStrayFlashes() {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        p.arguments = ["-f", flashMarker]
+        if (try? p.run()) != nil { p.waitUntilExit() }
+    }
+
+    /// Waits for every queued script: quit must not outrun its own restores.
+    static func drain() {
+        queue.sync {}
+        haywireQueue.sync(flags: .barrier) {}
+    }
+
+    /// One run of the color cycle on every tab of a window, about 7.5 s unless
+    /// cancelled (60 frames, each 50 ms plus three Apple Events); the manager
     /// starts the next run while the agent still needs you.
-    static func haywire(_ id: Int, done: @escaping @MainActor () -> Void) {
+    static func haywire(_ id: Int, done: @escaping @MainActor () -> Void) -> Flash {
         func c(_ v: [Int]) -> String { "{\(v[0]), \(v[1]), \(v[2])}" }
         let frames = christmas.map { "{\(c($0.0)), \(c($0.1))}" }.joined(separator: ", ")
         let src = """
+        -- \(flashMarker)
         tell application "Terminal"
           try
             set w to window id \(id)
@@ -255,32 +329,41 @@ enum TerminalScript {
           end try
         end tell
         """
+        let flash = Flash()
         haywireQueue.async {
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
             p.arguments = ["-e", src]
             p.standardOutput = Pipe()
             p.standardError = Pipe()
-            try? p.run()
-            p.waitUntilExit()
+            if flash.launch(p) { p.waitUntilExit() }
             Task { @MainActor in done() }
         }
+        return flash
     }
 
-    static func setColors(_ id: Int, bg: [Int], fg: [Int], bold: [Int]) {
-        guard bg.count == 3, fg.count == 3, bold.count == 3 else { return }
-        func c(_ v: [Int]) -> String { "{\(v[0]), \(v[1]), \(v[2])}" }
+    /// Puts a window's colors back after a flash. Text colors come from the tab's
+    /// profile, never from a reading of the tab: a reading taken mid-flash is a
+    /// flash color, and restoring it leaves the text yellow. `bg` nil means the
+    /// profile's background too.
+    static func restoreColors(_ id: Int, bg: [Int]?, completion: (@MainActor (String?) -> Void)? = nil) {
+        let back = bg.flatMap { $0.count == 3 ? "{\($0[0]), \($0[1]), \($0[2])}" : nil } ?? "background color of s"
         run("""
         tell application "Terminal"
           try
             repeat with t in tabs of window id \(id)
-              set background color of t to \(c(bg))
-              set normal text color of t to \(c(fg))
-              set bold text color of t to \(c(bold))
+              try
+                set s to settings set (name of current settings of t)
+              on error
+                set s to default settings
+              end try
+              set normal text color of t to normal text color of s
+              set bold text color of t to bold text color of s
+              set background color of t to \(back)
             end repeat
           end try
         end tell
-        """)
+        """, on: haywireQueue, completion: completion)
     }
 
     static func window(forTTY tty: String, _ completion: @escaping @MainActor (Int?) -> Void) {

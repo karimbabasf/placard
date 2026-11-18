@@ -116,7 +116,7 @@ struct Saved: Codable {
     var emoji: [String: String]? = nil      // Terminal window id -> emoji
     var tasks: [String: String]? = nil      // Terminal window id -> task text you typed over the title
     var auto: Bool? = nil                   // auto-label agent windows (default on)
-    var originalColors: [String: [Int]]? = nil   // bg + text + bold, saved while Christmas mode runs
+    var flashing: [Int]? = nil              // windows mid Christmas mode, so a killed Placard can put them back
     var flash: Bool? = nil                  // Christmas mode when an agent needs you (default on)
     var autoSkip: [String]? = nil           // windows whose label you removed: never auto-label again
 }
@@ -178,11 +178,11 @@ final class Store {
         set { saved.flash = newValue; commit() }
     }
 
-    func originalColors(for id: Int) -> [Int]? { saved.originalColors?[String(id)] }
-    func setOriginalColors(_ v: [Int]?, for id: Int) {
-        var m = saved.originalColors ?? [:]
-        m[String(id)] = v
-        saved.originalColors = m
+    var flashing: [Int] { saved.flashing ?? [] }
+    func setFlashing(_ id: Int, _ on: Bool) {
+        var s = Set(saved.flashing ?? [])
+        if on { s.insert(id) } else { s.remove(id) }
+        saved.flashing = s.isEmpty ? nil : s.sorted()
         if let data = try? JSONEncoder().encode(saved) { try? data.write(to: url, options: .atomic) }
     }
 
