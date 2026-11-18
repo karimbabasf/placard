@@ -1,7 +1,7 @@
 import AppKit
 import CoreGraphics
 
-enum WorkState { case none, running, working, yourTurn }
+enum WorkState { case none, running, working, yourTurn, needsYou }
 
 enum Log {
     static let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/Placard.log")
@@ -122,7 +122,7 @@ enum TerminalScript {
 
     static func list(_ ints: [Int]) -> String { "{" + ints.map(String.init).joined(separator: ", ") + "}" }
 
-    struct Info { let title: String; let bg: [Int]; let busy: Bool }
+    struct Info { let title: String; let bg: [Int]; let busy: Bool; let prompt: Bool }
 
     /// Each window's id, title, busy flag and first-tab background color.
     static func titles(_ completion: @escaping @MainActor ([Int: Info]) -> Void) {
@@ -133,8 +133,14 @@ enum TerminalScript {
           set out to ""
           repeat with w in windows
             try
+              set flag to "0"
+              if (name of w) contains (character id 10035) then
+                set c to contents of selected tab of w
+                if length of c > 3000 then set c to text -3000 thru -1 of c
+                if c contains "Do you want to" or c contains "Would you like to proceed" or c contains "Enter to select" or c contains "Esc to cancel" then set flag to "1"
+              end if
               set bg to background color of tab 1 of w
-              set out to out & (id of w) & T & (name of w) & T & (item 1 of bg) & "," & (item 2 of bg) & "," & (item 3 of bg) & T & (busy of selected tab of w) & NL
+              set out to out & (id of w) & T & (name of w) & T & (item 1 of bg) & "," & (item 2 of bg) & "," & (item 3 of bg) & T & (busy of selected tab of w) & T & flag & NL
             end try
           end repeat
           return out
@@ -144,9 +150,9 @@ enum TerminalScript {
             var map: [Int: Info] = [:]
             for line in (text ?? "").split(separator: "\n") {
                 let parts = line.components(separatedBy: "\t")
-                guard parts.count >= 4, let id = Int(parts[0]) else { continue }
+                guard parts.count >= 5, let id = Int(parts[0]) else { continue }
                 let bg = parts[2].split(separator: ",").compactMap { Int($0) }
-                map[id] = Info(title: parts[1], bg: bg, busy: parts[3] == "true")
+                map[id] = Info(title: parts[1], bg: bg, busy: parts[3] == "true", prompt: parts[4] == "1")
             }
             completion(map)
         }
@@ -211,14 +217,36 @@ enum TerminalScript {
 
     /// Claude Code puts a spinner glyph in the title while it works and a
     /// six-spoke asterisk when it waits for you. Any other busy tab is "running".
-    static func state(title: String, busy: Bool) -> WorkState {
+    static func state(title: String, busy: Bool, prompt: Bool = false) -> WorkState {
         let parts = title.components(separatedBy: " \u{2014} ")
         for part in parts {
             guard let first = part.trimmingCharacters(in: .whitespaces).unicodeScalars.first else { continue }
-            if first == idleGlyph { return .yourTurn }
+            if first == idleGlyph { return prompt ? .needsYou : .yourTurn }
             if workGlyphs.contains(first) { return .working }
         }
         return busy ? .running : .none
+    }
+
+    /// Label for a window whose agent just got its first task title: an open group the
+    /// title mentions, else the project folder, else the first two real words of the task.
+    static func autoName(title: String, groups: [Group]) -> String? {
+        let task = subtitle(from: title)
+        guard !task.isEmpty, task.caseInsensitiveCompare("Claude Code") != .orderedSame else { return nil }
+        let lower = task.lowercased()
+        if let g = groups.first(where: { g in
+            let n = g.name.lowercased()
+            return lower.hasPrefix(n) || lower.contains(" " + n) || lower.contains("(" + n)
+        }) { return g.name }
+        let dir = title.components(separatedBy: " \u{2014} ").first?.trimmingCharacters(in: .whitespaces) ?? ""
+        if !dir.isEmpty, dir != NSUserName(), dir != "~", !dir.hasPrefix("-") { return String(dir.prefix(24)) }
+        let stop: Set<String> = ["a", "an", "the", "for", "to", "of", "and", "in", "on", "with", "my", "is", "it", "this", "that", "how", "what", "why"]
+        let words = task.split(separator: " ").map(String.init).filter { w in
+            !stop.contains(w.lowercased()) && w.rangeOfCharacter(from: .letters) != nil
+        }
+        guard !words.isEmpty else { return nil }
+        return words.prefix(2).map { w in
+            w.first.map { $0.isLowercase ? $0.uppercased() + w.dropFirst() : w } ?? w
+        }.joined(separator: " ")
     }
 
     /// Short readable subtitle from a Terminal window title. Terminal joins the

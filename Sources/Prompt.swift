@@ -75,15 +75,18 @@ final class PromptController: NSObject, NSTextFieldDelegate {
         well.layer?.cornerCurve = .continuous
         root.addSubview(well)
 
-        field.frame = NSRect(x: 16, y: (fieldH - 34) / 2, width: inner - 32, height: 34)
+        // Size the field from the font's real line height, or big type clips at the top.
+        let fieldFont = Fonts.geist(24, "SemiBold")
+        let lineH = ceil(fieldFont.ascender - fieldFont.descender + fieldFont.leading) + 4
+        field.frame = NSRect(x: 16, y: (fieldH - lineH) / 2, width: inner - 32, height: lineH)
         field.isBordered = false
         field.drawsBackground = false
         field.focusRingType = .none
-        field.font = Fonts.geist(26, "SemiBold")
+        field.font = fieldFont
         field.textColor = .white
         field.stringValue = initialName
         field.placeholderAttributedString = NSAttributedString(string: "Name this window", attributes: [
-            .font: Fonts.geist(26, "SemiBold"), .foregroundColor: NSColor(white: 1, alpha: 0.42),
+            .font: fieldFont, .foregroundColor: NSColor(white: 1, alpha: 0.42),
         ])
         field.delegate = self
         field.cell?.usesSingleLineMode = true
@@ -291,6 +294,13 @@ final class SwatchView: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     private func redraw() {
+        if bounds.width < 16 {
+            // Too small for a dither to read: plain fill.
+            layer?.contents = nil
+            layer?.backgroundColor = Palette.fill(index).cgColor
+            check.isHidden = true
+            return
+        }
         layer?.contents = Dither.swatch(size: bounds.size, color: index)
         layer?.magnificationFilter = .nearest
         layer?.masksToBounds = true
@@ -334,13 +344,16 @@ final class ChipView: NSView {
 
     required init?(coder: NSCoder) { fatalError() }
 
-    var fittingWidth: CGFloat { min(180, 12 + 10 + 8 + ceil(label.intrinsicContentSize.width) + 12) }
+    var fittingWidth: CGFloat {
+        let w = ceil((group.name as NSString).size(withAttributes: [.font: Fonts.geist(14, "Medium")]).width)
+        return min(200, 30 + w + 14)
+    }
 
     override func layout() {
         super.layout()
         dot.frame.origin = NSPoint(x: 12, y: (bounds.height - 10) / 2)
         let h = label.intrinsicContentSize.height
-        label.frame = NSRect(x: 30, y: (bounds.height - h) / 2, width: bounds.width - 30 - 10, height: h)
+        label.frame = NSRect(x: 30, y: (bounds.height - h) / 2, width: bounds.width - 30 - 8, height: h)
     }
 
     override func mouseEntered(with event: NSEvent) { hovering = true }

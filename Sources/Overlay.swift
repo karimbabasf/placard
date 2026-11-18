@@ -165,7 +165,7 @@ final class StripView: NSView {
         let old = model
         model = m
         configured = true
-        let ink = Palette.ink(m.color, dull: m.state != .working)
+        let ink = Palette.ink(m.color, dull: m.state != .working && m.state != .needsYou)
         CATransaction.begin()
         CATransaction.setDisableActions(old.color == m.color)
         nameLayer.foregroundColor = ink.cgColor
@@ -207,6 +207,7 @@ final class StripView: NSView {
         switch s {
         case .working: return "WORKING"
         case .yourTurn: return "YOUR TURN"
+        case .needsYou: return "NEEDS YOU"
         case .running: return "RUNNING"
         case .none: return ""
         }
@@ -238,7 +239,7 @@ final class StripView: NSView {
         CATransaction.setDisableActions(true)
         body.frame = bounds
         fill.frame = bounds
-        let dull = model.state != .working
+        let dull = model.state != .working && model.state != .needsYou
         let key = "\(model.color)-\(dull)-\(Int(bounds.width))-\(Int(bounds.height))"
         if key != fillKey {
             // Working strips are bright; everything else fades to a dull version.
@@ -258,7 +259,7 @@ final class StripView: NSView {
         // status, right aligned
         let statusText = Self.statusText(model.state) as NSString
         let statusW = statusText.length == 0 ? 0 : ceil(statusText.size(withAttributes: [.font: Fonts.pixel(12)]).width) + 2
-        let dotsW: CGFloat = model.state == .working || model.state == .yourTurn ? 8 + 7 : 0
+        let dotsW: CGFloat = model.state == .none || model.state == .running ? 0 : 8 + 7
         let emojiSlot: CGFloat = model.emoji.isEmpty ? 0 : 20 + (statusW > 0 ? 6 : 0)
         emojiLayer.frame = CGRect(x: bounds.width - pad - 18, y: (h - 18) / 2, width: 18, height: 18)
         let statusX = bounds.width - pad - emojiSlot - statusW
@@ -297,7 +298,7 @@ final class StripView: NSView {
     private func applyState() {
         for d in dots { d.removeAllAnimations(); d.opacity = 1 }
         switch model.state {
-        case .working:
+        case .working, .needsYou:
             // One lit cell walks the 2x2 grid clockwise.
             let order = [0, 1, 3, 2]
             for (step, idx) in order.enumerated() {

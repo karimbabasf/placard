@@ -149,6 +149,8 @@ final class OverlayManager {
     private final class Slot {
         let strip = StripPanel()
         let control = ControlPanel()
+        lazy var haywire = HaywirePanel()
+        var haywireOn = false
         var entered = false
         var stripFrame: NSRect?
         var controlFrame: NSRect?
@@ -274,7 +276,20 @@ final class OverlayManager {
                 slots[id] = s
                 return s
             }()
-            if quiet { slot.strip.orderOut(nil); slot.control.orderOut(nil); continue }
+            if quiet { slot.strip.orderOut(nil); slot.control.orderOut(nil); if slot.haywireOn { slot.haywire.orderOut(nil) }; continue }
+
+            // Christmas mode while the agent waits on an approval, or briefly after it finishes.
+            let wantHaywire = store.flash && (parsed[id]?.state == .needsYou || now < (celebrateUntil[id] ?? 0))
+            if wantHaywire {
+                let target = Windows.cocoaRect(frame)
+                if slot.haywire.frame != target { slot.haywire.setFrame(target, display: false) }
+                slot.haywire.view.setOccluders(cutsFor(id, frame, index))
+                if !slot.haywire.isVisible { slot.haywire.orderFrontRegardless() }
+                slot.haywireOn = true
+            } else if slot.haywireOn {
+                slot.haywire.orderOut(nil)
+                slot.haywireOn = false
+            }
 
             let group = store.group(forWindow: id)
             let showStrip = group != nil && !hidden
@@ -342,12 +357,27 @@ final class OverlayManager {
         for (id, s) in slots where raw[id] == nil {
             if s.strip.isVisible { s.strip.orderOut(nil) }
             if s.control.isVisible { s.control.orderOut(nil) }
+            if s.haywireOn { s.haywire.orderOut(nil); s.haywireOn = false }
             if !known.contains(id) { slots.removeValue(forKey: id) }
         }
         for (id, s) in slots where store.group(forWindow: id) == nil && s.entered {
             s.entered = false
             restoreBackground(id)
         }
+    }
+
+    private var celebrateUntil: [Int: CFTimeInterval] = [:]
+
+    private func cutsFor(_ id: Int, _ rect: CGRect, _ index: [Int: Int]) -> [CGRect] {
+        guard let i = index[id] else { return [] }
+        var out: [CGRect] = []
+        for o in scene_[..<i] where o.pid != ownPID && o.layer >= 0 && o.layer < 20 {
+            let hit = o.frame.intersection(rect)
+            if !hit.isNull, hit.width > 0, hit.height > 0 {
+                out.append(CGRect(x: hit.minX - rect.minX, y: rect.maxY - hit.maxY, width: hit.width, height: hit.height))
+            }
+        }
+        return out
     }
 
     private func anchor(_ id: Int) -> CGRect { lastRaw[id] ?? .zero }
@@ -375,9 +405,29 @@ final class OverlayManager {
         TerminalScript.titles { [weak self] map in
             guard let self else { return }
             self.polling = false
+            let before = self.parsed
             self.info = map
-            self.parsed = map.mapValues { (TerminalScript.subtitle(from: $0.title), TerminalScript.state(title: $0.title, busy: $0.busy)) }
+            self.parsed = map.mapValues { (TerminalScript.subtitle(from: $0.title), TerminalScript.state(title: $0.title, busy: $0.busy, prompt: $0.prompt)) }
+            let now = CACurrentMediaTime()
+            for (id, p) in self.parsed where before[id]?.state == .working && p.state == .yourTurn {
+                self.celebrateUntil[id] = now + 5
+                self.burst(5.5)
+            }
+            self.autoLabel()
             self.applyTints()
+        }
+    }
+
+    /// The moment an agent window gets a real task title, it gets a label.
+    private func autoLabel() {
+        let store = Store.shared
+        guard store.auto else { return }
+        for (id, i) in info where store.group(forWindow: id) == nil && !store.isSkipped(id) {
+            let st = parsed[id]?.state ?? .none
+            guard st == .working || st == .yourTurn || st == .needsYou,
+                  let name = TerminalScript.autoName(title: i.title, groups: store.groups) else { continue }
+            store.label(window: id, name: name, color: nil)
+            Log.write("auto-labeled \(id) as \(name)")
         }
     }
 
@@ -387,12 +437,19 @@ final class OverlayManager {
             guard let g = store.group(forWindow: id), let current = info[id]?.bg else { continue }
             if !store.tint || store.hidden { restoreBackground(id); continue }
             if store.original(for: id) == nil { store.setOriginal(current, for: id) }
-            let want = Palette.tint(g.color, over: store.original(for: id) ?? current)
+            var want = Palette.tint(g.color, over: store.original(for: id) ?? current)
+            if store.flash && parsed[id]?.state == .needsYou {
+                // The whole window blinks red and green with each status poll.
+                flip.toggle()
+                want = Palette.mixed(flip ? (0.84, 0.15, 0.24) : (0.09, 0.65, 0.35), over: store.original(for: id) ?? current, mix: 0.34)
+            }
             // Terminal rounds colors on the way back; only write on a real change.
             let off = zip(current, want).map { abs($0 - $1) }.max() ?? .max
             if current.count != 3 || off > 600 { TerminalScript.setBackground(id, want) }
         }
     }
+
+    private var flip = false
 
     func restoreBackground(_ id: Int) {
         guard let orig = Store.shared.original(for: id) else { return }

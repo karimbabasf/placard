@@ -82,10 +82,16 @@ enum Palette {
     }
 
     /// Terminal background tint: the group hue mixed into the window's own background.
-    static func tint(_ i: Int, over base: [Int]) -> [Int] {
+    static func mixed(_ c: (Double, Double, Double), over base: [Int], mix: Double) -> [Int] {
+        zip([c.0, c.1, c.2], base.count == 3 ? base : [0, 0, 0]).map { v, o in
+            Int(((Double(o) / 65535) * (1 - mix) + v * mix) * 65535)
+        }
+    }
+
+    static func tint(_ i: Int, over base: [Int], mix forced: Double? = nil) -> [Int] {
         let (r, g, b) = rgb(i)
         let light = base.count == 3 && base.reduce(0, +) > 3 * 32768
-        let mix = light ? 0.12 : 0.16
+        let mix = forced ?? (light ? 0.12 : 0.16)
         return zip([r, g, b], base.count == 3 ? base : [0, 0, 0]).map { c, o in
             let ov = Double(o) / 65535
             return Int(((ov * (1 - mix)) + c * mix) * 65535)
@@ -108,6 +114,9 @@ struct Saved: Codable {
     var didFirstLaunch: Bool = false
     var hidden: Bool? = nil                 // labels turned off, handles stay
     var emoji: [String: String]? = nil      // Terminal window id -> emoji
+    var auto: Bool? = nil                   // auto-label agent windows (default on)
+    var flash: Bool? = nil                  // Christmas mode when an agent needs you (default on)
+    var autoSkip: [String]? = nil           // windows whose label you removed: never auto-label again
 }
 
 enum Emoji {
@@ -156,6 +165,18 @@ final class Store {
         get { saved.hidden ?? false }
         set { saved.hidden = newValue; commit() }
     }
+
+    var auto: Bool {
+        get { saved.auto ?? true }
+        set { saved.auto = newValue; commit() }
+    }
+
+    var flash: Bool {
+        get { saved.flash ?? true }
+        set { saved.flash = newValue; commit() }
+    }
+
+    func isSkipped(_ id: Int) -> Bool { saved.autoSkip?.contains(String(id)) ?? false }
 
     func emoji(forWindow id: Int) -> String? { saved.emoji?[String(id)] }
 
@@ -231,6 +252,7 @@ final class Store {
     func unlabel(window id: Int) {
         saved.windows.removeValue(forKey: String(id))
         saved.emoji?.removeValue(forKey: String(id))
+        saved.autoSkip = Array(Set((saved.autoSkip ?? []) + [String(id)]))
         pruneEmptyGroups()
         commit()
     }
@@ -259,6 +281,8 @@ final class Store {
     }
 
     func dissolve(_ group: Group) {
+        let ids = saved.windows.filter { $0.value == group.id }.map { $0.key }
+        saved.autoSkip = Array(Set((saved.autoSkip ?? []) + ids))
         saved.windows = saved.windows.filter { $0.value != group.id }
         pruneEmptyGroups()
         commit()
@@ -270,6 +294,7 @@ final class Store {
         saved.windows = saved.windows.filter { alive.contains(Int($0.key) ?? -1) }
         saved.originalBackground = saved.originalBackground.filter { alive.contains(Int($0.key) ?? -1) }
         saved.emoji = saved.emoji?.filter { alive.contains(Int($0.key) ?? -1) }
+        saved.autoSkip = saved.autoSkip?.filter { alive.contains(Int($0) ?? -1) }
         if saved.windows.count != before { pruneEmptyGroups(); commit() }
     }
 

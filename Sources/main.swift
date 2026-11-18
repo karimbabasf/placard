@@ -200,6 +200,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Window
         tint.target = self
         tint.state = Store.shared.tint ? .on : .off
         menu.addItem(tint)
+        menu.addItem(item("Auto-Label Agent Windows", state: Store.shared.auto) { Store.shared.auto.toggle() })
+        menu.addItem(item("Flash When an Agent Needs You", state: Store.shared.flash) { Store.shared.flash.toggle() })
         let login = NSMenuItem(title: "Open at Login", action: #selector(menuLogin), keyEquivalent: "")
         login.target = self
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
@@ -317,6 +319,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Window
         menu.addItem(.separator())
         menu.addItem(item("Show Labels", state: !store.hidden) { [weak self] in self?.menuHidden() })
         menu.addItem(item("Tint Window Background", state: store.tint) { [weak self] in self?.menuTint() })
+        menu.addItem(item("Auto-Label Agent Windows", state: store.auto) { Store.shared.auto.toggle() })
+        menu.addItem(item("Flash When an Agent Needs You", state: store.flash) { Store.shared.flash.toggle() })
         return menu
     }
 
