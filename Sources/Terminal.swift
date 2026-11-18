@@ -210,10 +210,20 @@ enum TerminalScript {
         [0.70, 0.08, 0.14, 1.00, 1.00, 1.00],
         [0.05, 0.50, 0.22, 1.00, 0.40, 0.42],
     ]
-    static let christmas: [([Int], [Int])] = christmasRaw.map { row in
-        let v = row.map { Int($0 * 65535) }
-        return (Array(v[0..<3]), Array(v[3..<6]))
-    }
+    /// Blended frames between the pairs, so colors flow instead of strobing.
+    static let christmas: [([Int], [Int])] = {
+        let steps = 5
+        var out: [([Int], [Int])] = []
+        for i in 0..<christmasRaw.count {
+            let a = christmasRaw[i], b = christmasRaw[(i + 1) % christmasRaw.count]
+            for k in 0..<steps {
+                let t = Double(k) / Double(steps)
+                let v = zip(a, b).map { Int((($0 * (1 - t)) + $1 * t) * 65535) }
+                out.append((Array(v[0..<3]), Array(v[3..<6])))
+            }
+        }
+        return out
+    }()
 
     private static let haywireQueue = DispatchQueue(label: "placard.haywire", attributes: .concurrent)
 
@@ -233,7 +243,7 @@ enum TerminalScript {
                   set normal text color of t to item 2 of f
                   set bold text color of t to item 2 of f
                 end repeat
-                delay 0.11
+                delay 0.05
               end repeat
             end repeat
           end try

@@ -307,8 +307,10 @@ final class OverlayManager {
                     slot.strip.strip.layoutSubtreeIfNeeded()
                     slot.stripFrame = target
                 }
-                slot.strip.strip.setOccluders(cuts(for: stripCG))
+                let cs = cuts(for: stripCG)
+                slot.strip.strip.setOccluders(cs)
                 if !slot.strip.isVisible {
+                    Log.write("strip shown \(id)")
                     slot.strip.orderFrontRegardless()
                     if !slot.entered { slot.entered = true; slot.strip.strip.playEntrance() }
                     slot.control.orderOut(nil)      // re-front it above the strip below
@@ -344,8 +346,12 @@ final class OverlayManager {
             }
         }
 
+        for id in raw.keys { missing[id] = 0 }
         for (id, s) in slots where raw[id] == nil {
-            if s.strip.isVisible { s.strip.orderOut(nil) }
+            // WindowServer sometimes drops a window from one read; only hide after 3 misses.
+            missing[id, default: 0] += 1
+            if missing[id]! < 3 && known.contains(id) { continue }
+            if s.strip.isVisible { Log.write("strip hidden \(id): window off screen"); s.strip.orderOut(nil) }
             if s.control.isVisible { s.control.orderOut(nil) }
             if !known.contains(id) { slots.removeValue(forKey: id) }
         }
@@ -356,6 +362,7 @@ final class OverlayManager {
     }
 
     private var celebrateUntil: [Int: CFTimeInterval] = [:]
+    private var missing: [Int: Int] = [:]
 
     private func cutsFor(_ id: Int, _ rect: CGRect, _ index: [Int: Int]) -> [CGRect] {
         guard let i = index[id] else { return [] }
