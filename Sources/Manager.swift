@@ -274,8 +274,8 @@ final class OverlayManager {
             }()
             if quiet { slot.strip.orderOut(nil); slot.control.orderOut(nil); continue }
 
-            // Christmas mode while the agent waits on an approval, or briefly after it finishes.
-            let wantHaywire = store.flash && (parsed[id]?.state == .needsYou || now < (celebrateUntil[id] ?? 0))
+            // Christmas mode only while the agent waits on you.
+            let wantHaywire = store.flash && parsed[id]?.state == .needsYou
             if wantHaywire { startHaywire(id) }
             else if haywireDirty.contains(id) && !haywireRunning.contains(id) { endHaywire(id) }
 
@@ -359,7 +359,6 @@ final class OverlayManager {
         }
     }
 
-    private var celebrateUntil: [Int: CFTimeInterval] = [:]
     private var missing: [Int: Int] = [:]
 
     private func cutsFor(_ id: Int, _ rect: CGRect, _ index: [Int: Int]) -> [CGRect] {
@@ -399,14 +398,8 @@ final class OverlayManager {
         TerminalScript.titles { [weak self] map in
             guard let self else { return }
             self.polling = false
-            let before = self.parsed
             self.info = map
             self.parsed = map.mapValues { (TerminalScript.subtitle(from: $0.title), TerminalScript.state(title: $0.title, busy: $0.busy, prompt: $0.prompt)) }
-            let now = CACurrentMediaTime()
-            for (id, p) in self.parsed where before[id]?.state == .working && p.state == .yourTurn {
-                self.celebrateUntil[id] = now + 5
-                self.burst(5.5)
-            }
             self.autoLabel()
             self.applyTints()
         }
