@@ -115,6 +115,7 @@ struct Saved: Codable {
     var hidden: Bool? = nil                 // labels turned off, handles stay
     var emoji: [String: String]? = nil      // Terminal window id -> emoji
     var auto: Bool? = nil                   // auto-label agent windows (default on)
+    var originalColors: [String: [Int]]? = nil   // bg + text + bold, saved while Christmas mode runs
     var flash: Bool? = nil                  // Christmas mode when an agent needs you (default on)
     var autoSkip: [String]? = nil           // windows whose label you removed: never auto-label again
 }
@@ -174,6 +175,14 @@ final class Store {
     var flash: Bool {
         get { saved.flash ?? true }
         set { saved.flash = newValue; commit() }
+    }
+
+    func originalColors(for id: Int) -> [Int]? { saved.originalColors?[String(id)] }
+    func setOriginalColors(_ v: [Int]?, for id: Int) {
+        var m = saved.originalColors ?? [:]
+        m[String(id)] = v
+        saved.originalColors = m
+        if let data = try? JSONEncoder().encode(saved) { try? data.write(to: url, options: .atomic) }
     }
 
     func isSkipped(_ id: Int) -> Bool { saved.autoSkip?.contains(String(id)) ?? false }

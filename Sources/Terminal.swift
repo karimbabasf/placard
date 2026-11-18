@@ -122,7 +122,7 @@ enum TerminalScript {
 
     static func list(_ ints: [Int]) -> String { "{" + ints.map(String.init).joined(separator: ", ") + "}" }
 
-    struct Info { let title: String; let bg: [Int]; let busy: Bool; let prompt: Bool }
+    struct Info { let title: String; let bg: [Int]; let busy: Bool; let prompt: Bool; let fg: [Int]; let bold: [Int] }
 
     /// Each window's id, title, busy flag and first-tab background color.
     static func titles(_ completion: @escaping @MainActor ([Int: Info]) -> Void) {
@@ -140,7 +140,9 @@ enum TerminalScript {
                 if c contains "Do you want to" or c contains "Would you like to proceed" or c contains "Enter to select" or c contains "Esc to cancel" then set flag to "1"
               end if
               set bg to background color of tab 1 of w
-              set out to out & (id of w) & T & (name of w) & T & (item 1 of bg) & "," & (item 2 of bg) & "," & (item 3 of bg) & T & (busy of selected tab of w) & T & flag & NL
+              set fg to normal text color of tab 1 of w
+              set bd to bold text color of tab 1 of w
+              set out to out & (id of w) & T & (name of w) & T & (item 1 of bg) & "," & (item 2 of bg) & "," & (item 3 of bg) & T & (busy of selected tab of w) & T & flag & T & (item 1 of fg) & "," & (item 2 of fg) & "," & (item 3 of fg) & T & (item 1 of bd) & "," & (item 2 of bd) & "," & (item 3 of bd) & NL
             end try
           end repeat
           return out
@@ -150,9 +152,11 @@ enum TerminalScript {
             var map: [Int: Info] = [:]
             for line in (text ?? "").split(separator: "\n") {
                 let parts = line.components(separatedBy: "\t")
-                guard parts.count >= 5, let id = Int(parts[0]) else { continue }
+                guard parts.count >= 7, let id = Int(parts[0]) else { continue }
                 let bg = parts[2].split(separator: ",").compactMap { Int($0) }
-                map[id] = Info(title: parts[1], bg: bg, busy: parts[3] == "true", prompt: parts[4] == "1")
+                let fg = parts[5].split(separator: ",").compactMap { Int($0) }
+                let bold = parts[6].split(separator: ",").compactMap { Int($0) }
+                map[id] = Info(title: parts[1], bg: bg, busy: parts[3] == "true", prompt: parts[4] == "1", fg: fg, bold: bold)
             }
             completion(map)
         }
@@ -195,6 +199,72 @@ enum TerminalScript {
         end tell
         """
         run(src)
+    }
+
+    /// Christmas frames: (background, text). Deep backgrounds, bright letters.
+    private static let christmasRaw: [[Double]] = [
+        [0.62, 0.04, 0.10, 0.55, 1.00, 0.62],
+        [0.03, 0.42, 0.17, 1.00, 0.86, 0.25],
+        [0.55, 0.38, 0.00, 1.00, 1.00, 1.00],
+        [0.04, 0.26, 0.12, 1.00, 0.32, 0.36],
+        [0.70, 0.08, 0.14, 1.00, 1.00, 1.00],
+        [0.05, 0.50, 0.22, 1.00, 0.40, 0.42],
+    ]
+    static let christmas: [([Int], [Int])] = christmasRaw.map { row in
+        let v = row.map { Int($0 * 65535) }
+        return (Array(v[0..<3]), Array(v[3..<6]))
+    }
+
+    private static let haywireQueue = DispatchQueue(label: "placard.haywire", attributes: .concurrent)
+
+    /// One ~1.3 s run of the color cycle on every tab of a window; the manager
+    /// starts the next run while the agent still needs you.
+    static func haywire(_ id: Int, done: @escaping @MainActor () -> Void) {
+        func c(_ v: [Int]) -> String { "{\(v[0]), \(v[1]), \(v[2])}" }
+        let frames = christmas.map { "{\(c($0.0)), \(c($0.1))}" }.joined(separator: ", ")
+        let src = """
+        tell application "Terminal"
+          try
+            set w to window id \(id)
+            repeat 2 times
+              repeat with f in {\(frames)}
+                repeat with t in tabs of w
+                  set background color of t to item 1 of f
+                  set normal text color of t to item 2 of f
+                  set bold text color of t to item 2 of f
+                end repeat
+                delay 0.11
+              end repeat
+            end repeat
+          end try
+        end tell
+        """
+        haywireQueue.async {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            p.arguments = ["-e", src]
+            p.standardOutput = Pipe()
+            p.standardError = Pipe()
+            try? p.run()
+            p.waitUntilExit()
+            Task { @MainActor in done() }
+        }
+    }
+
+    static func setColors(_ id: Int, bg: [Int], fg: [Int], bold: [Int]) {
+        guard bg.count == 3, fg.count == 3, bold.count == 3 else { return }
+        func c(_ v: [Int]) -> String { "{\(v[0]), \(v[1]), \(v[2])}" }
+        run("""
+        tell application "Terminal"
+          try
+            repeat with t in tabs of window id \(id)
+              set background color of t to \(c(bg))
+              set normal text color of t to \(c(fg))
+              set bold text color of t to \(c(bold))
+            end repeat
+          end try
+        end tell
+        """)
     }
 
     static func window(forTTY tty: String, _ completion: @escaping @MainActor (Int?) -> Void) {

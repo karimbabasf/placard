@@ -149,8 +149,6 @@ final class OverlayManager {
     private final class Slot {
         let strip = StripPanel()
         let control = ControlPanel()
-        lazy var haywire = HaywirePanel()
-        var haywireOn = false
         var entered = false
         var stripFrame: NSRect?
         var controlFrame: NSRect?
@@ -276,20 +274,12 @@ final class OverlayManager {
                 slots[id] = s
                 return s
             }()
-            if quiet { slot.strip.orderOut(nil); slot.control.orderOut(nil); if slot.haywireOn { slot.haywire.orderOut(nil) }; continue }
+            if quiet { slot.strip.orderOut(nil); slot.control.orderOut(nil); continue }
 
             // Christmas mode while the agent waits on an approval, or briefly after it finishes.
             let wantHaywire = store.flash && (parsed[id]?.state == .needsYou || now < (celebrateUntil[id] ?? 0))
-            if wantHaywire {
-                let target = Windows.cocoaRect(frame)
-                if slot.haywire.frame != target { slot.haywire.setFrame(target, display: false) }
-                slot.haywire.view.setOccluders(cutsFor(id, frame, index))
-                if !slot.haywire.isVisible { slot.haywire.orderFrontRegardless() }
-                slot.haywireOn = true
-            } else if slot.haywireOn {
-                slot.haywire.orderOut(nil)
-                slot.haywireOn = false
-            }
+            if wantHaywire { startHaywire(id) }
+            else if haywireDirty.contains(id) && !haywireRunning.contains(id) { endHaywire(id) }
 
             let group = store.group(forWindow: id)
             let showStrip = group != nil && !hidden
@@ -357,7 +347,6 @@ final class OverlayManager {
         for (id, s) in slots where raw[id] == nil {
             if s.strip.isVisible { s.strip.orderOut(nil) }
             if s.control.isVisible { s.control.orderOut(nil) }
-            if s.haywireOn { s.haywire.orderOut(nil); s.haywireOn = false }
             if !known.contains(id) { slots.removeValue(forKey: id) }
         }
         for (id, s) in slots where store.group(forWindow: id) == nil && s.entered {
@@ -437,19 +426,45 @@ final class OverlayManager {
             guard let g = store.group(forWindow: id), let current = info[id]?.bg else { continue }
             if !store.tint || store.hidden { restoreBackground(id); continue }
             if store.original(for: id) == nil { store.setOriginal(current, for: id) }
-            var want = Palette.tint(g.color, over: store.original(for: id) ?? current)
-            if store.flash && parsed[id]?.state == .needsYou {
-                // The whole window blinks red and green with each status poll.
-                flip.toggle()
-                want = Palette.mixed(flip ? (0.84, 0.15, 0.24) : (0.09, 0.65, 0.35), over: store.original(for: id) ?? current, mix: 0.34)
-            }
+            if haywireDirty.contains(id) { continue }
+            let want = Palette.tint(g.color, over: store.original(for: id) ?? current)
             // Terminal rounds colors on the way back; only write on a real change.
             let off = zip(current, want).map { abs($0 - $1) }.max() ?? .max
             if current.count != 3 || off > 600 { TerminalScript.setBackground(id, want) }
         }
     }
 
-    private var flip = false
+    // MARK: Christmas mode: the window's background and text cycle colors.
+
+    private var haywireRunning = Set<Int>()
+    private var haywireDirty = Set<Int>()
+
+    private func startHaywire(_ id: Int) {
+        guard !haywireRunning.contains(id), let i = info[id] else { return }
+        let store = Store.shared
+        if store.originalColors(for: id) == nil {
+            let bg = store.original(for: id) ?? i.bg
+            store.setOriginalColors(bg + i.fg + i.bold, for: id)
+        }
+        haywireRunning.insert(id)
+        haywireDirty.insert(id)
+        TerminalScript.haywire(id) { [weak self] in self?.haywireRunning.remove(id) }
+    }
+
+    private func endHaywire(_ id: Int) {
+        haywireDirty.remove(id)
+        let store = Store.shared
+        guard let o = store.originalColors(for: id), o.count == 9 else { return }
+        var bg = Array(o[0..<3])
+        if let g = store.group(forWindow: id), store.tint, !store.hidden {
+            if store.original(for: id) == nil { store.setOriginal(bg, for: id) }
+            bg = Palette.tint(g.color, over: bg)
+        }
+        TerminalScript.setColors(id, bg: bg, fg: Array(o[3..<6]), bold: Array(o[6..<9]))
+        store.setOriginalColors(nil, for: id)
+    }
+
+    func restoreAllHaywire() { for id in haywireDirty { endHaywire(id) } }
 
     func restoreBackground(_ id: Int) {
         guard let orig = Store.shared.original(for: id) else { return }
