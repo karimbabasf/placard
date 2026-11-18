@@ -141,11 +141,21 @@ for f in 0..<frames {
         stripRects.append((strip, i))
     }
 
-    // ordered dither of everything drawn so far: 2 px cells, 5 levels per channel
+    // ordered dither on the strips only: 2 px cells, 5 levels per channel.
+    // Dark fills stay smooth: a dot grid on near-black moires when the README scales the GIF, and shimmers on scroll.
     let data = ctx.data!.assumingMemoryBound(to: UInt8.self)
     let levels: CGFloat = 5
-    for y in 0..<H {
-        for x in 0..<W {
+    func inStrip(_ x: Int, _ y: Int, _ r: CGRect) -> Bool {
+        let px = CGFloat(x) + 0.5, py = CGFloat(y) + 0.5, rad: CGFloat = 7
+        guard r.contains(CGPoint(x: px, y: py)) else { return false }
+        let dx = max(r.minX + rad - px, px - (r.maxX - rad), 0), dy = max(r.minY + rad - py, py - (r.maxY - rad), 0)
+        return dx * dx + dy * dy <= rad * rad
+    }
+    for (i, (r, _)) in stripRects.enumerated() {
+        // a window drawn later covers part of this strip: leave those pixels alone
+        let covers = wins[(i + 1)...].map { CGRect(x: $0.x, y: $0.y, width: $0.w, height: $0.h) }
+        for y in Int(r.minY)..<Int(r.maxY.rounded(.up)) { for x in Int(r.minX)..<Int(r.maxX.rounded(.up)) {
+            guard inStrip(x, y, r), !covers.contains(where: { $0.contains(CGPoint(x: CGFloat(x) + 0.5, y: CGFloat(y) + 0.5)) }) else { continue }
             let th = bayer[((y / 2) & 3) * 4 + ((x / 2) & 3)]
             let o = (y * W + x) * 4
             for c in 0..<3 {
@@ -153,7 +163,7 @@ for f in 0..<frames {
                 let q = min(levels - 1, floor(v + th))
                 data[o + c] = UInt8(q / (levels - 1) * 255)
             }
-        }
+        } }
     }
 
     // ---- pass 2: crisp text and controls
