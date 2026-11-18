@@ -187,20 +187,32 @@ final class StripView: NSView {
     /// can fall outside a text line box and get clipped.
     static func emojiImage(_ e: String) -> CGImage? {
         guard !e.isEmpty else { return nil }
+        // Font metrics lie for color emoji, so draw on a roomy canvas and find
+        // the real ink by scanning alpha, then crop to a centered square.
+        let size = 160
         let font = NSFont(name: "AppleColorEmoji", size: 64) ?? .systemFont(ofSize: 64)
-        let str = NSAttributedString(string: e, attributes: [.font: font])
-        let ink = str.boundingRect(with: NSSize(width: 400, height: 400), options: [.usesDeviceMetrics, .usesLineFragmentOrigin])
-        let side = ceil(max(ink.width, ink.height)) + 4
-        let px = Int(side * 2)
-        guard let ctx = CGContext(data: nil, width: px, height: px, bitsPerComponent: 8, bytesPerRow: 0,
+        guard let ctx = CGContext(data: nil, width: size, height: size, bitsPerComponent: 8, bytesPerRow: size * 4,
                                   space: CGColorSpace(name: CGColorSpace.sRGB)!,
                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
-        ctx.scaleBy(x: 2, y: 2)
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
-        str.draw(at: NSPoint(x: (side - ink.width) / 2 - ink.minX, y: (side - ink.height) / 2 - ink.minY))
+        NSAttributedString(string: e, attributes: [.font: font]).draw(at: NSPoint(x: 40, y: 40))
         NSGraphicsContext.restoreGraphicsState()
-        return ctx.makeImage()
+        guard let data = ctx.data?.assumingMemoryBound(to: UInt8.self) else { return nil }
+        var minX = size, minY = size, maxX = -1, maxY = -1
+        for y in 0..<size {
+            for x in 0..<size where data[(y * size + x) * 4 + 3] > 8 {
+                minX = min(minX, x); maxX = max(maxX, x)
+                minY = min(minY, y); maxY = max(maxY, y)
+            }
+        }
+        guard maxX >= minX, maxY >= minY, let full = ctx.makeImage() else { return nil }
+        let w = maxX - minX + 1, h = maxY - minY + 1
+        let side = max(w, h) + 2
+        let cx = minX + w / 2, cy = minY + h / 2
+        let crop = CGRect(x: cx - side / 2, y: cy - side / 2, width: side, height: side)
+            .intersection(CGRect(x: 0, y: 0, width: size, height: size))
+        return full.cropping(to: crop)
     }
 
     static func statusText(_ s: WorkState) -> String {
