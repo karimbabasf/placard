@@ -1,0 +1,18 @@
+#!/bin/sh
+# Label the Terminal window this shell runs in.
+#   placard API            label this window "API" (joins the group if it exists)
+#   placard API blue       same, with a color
+#   placard                open the naming panel for this window
+#   placard -u             remove this window's label
+#   placard -r API         bring group API to front
+#   placard -t API         tile group API on one screen
+enc() { printf '%s' "$1" | /usr/bin/python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read()))'; }
+TTY=$(tty 2>/dev/null)
+case "$1" in
+  -u) open -g "placard://unlabel?tty=$(enc "$TTY")" ;;
+  -r) open -g "placard://raise?name=$(enc "$2")" ;;
+  -t) open -g "placard://tile?name=$(enc "$2")" ;;
+  -h|--help) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//' ;;
+  "") open "placard://label?tty=$(enc "$TTY")" ;;
+  *) open -g "placard://label?name=$(enc "$1")&color=$(enc "$2")&tty=$(enc "$TTY")" ;;
+esac
