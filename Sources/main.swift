@@ -35,6 +35,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Window
         }
 
         requestAutomation()
+        // A terminal opened after Placard gets its consent prompt when it launches.
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main) { [weak self] note in
+            let bundle = (note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.bundleIdentifier ?? ""
+            guard bundle == Windows.bundleID || Others.bundleIDs.contains(bundle) else { return }
+            MainActor.assumeIsolated { DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self?.requestAutomation() } }
+        }
 
         if !Store.shared.saved.didFirstLaunch {
             try? SMAppService.mainApp.register()
@@ -42,23 +48,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Window
         }
     }
 
-    /// Asks for "control Terminal" up front, in-process, so the consent dialog
-    /// is attributed to Placard and actually shows.
+    /// Asks for "control Terminal" (and Ghostty, iTerm2) up front, in-process, so
+    /// the consent dialog is attributed to Placard and actually shows. Other
+    /// terminals are read through Accessibility, which gets its own prompt.
     func requestAutomation() {
-        guard Windows.terminalApp != nil else { return }
+        let running = Windows.apps.compactMap(\.bundleIdentifier)
+        guard !running.isEmpty else { return }
         NSApp.activate(ignoringOtherApps: true)
-        let target = NSAppleEventDescriptor(bundleIdentifier: Windows.bundleID)
-        DispatchQueue.global(qos: .userInitiated).async {
-            let status = AEDeterminePermissionToAutomateTarget(target.aeDesc, typeWildCard, typeWildCard, true)
-            Log.write("automation permission status \(status)")
-            DispatchQueue.main.async { MainActor.assumeIsolated { self.overlays.refreshInfo() } }
+        if running.contains(where: { $0 != Windows.bundleID }), !Others.trusted { Others.requestAccess() }
+        let scripted = running.filter { [Windows.bundleID, "com.mitchellh.ghostty", "com.googlecode.iterm2"].contains($0) && !asked.contains($0) }
+        asked.formUnion(scripted)
+        for bundle in scripted {
+            let target = NSAppleEventDescriptor(bundleIdentifier: bundle)
+            DispatchQueue.global(qos: .userInitiated).async {
+                let status = AEDeterminePermissionToAutomateTarget(target.aeDesc, typeWildCard, typeWildCard, true)
+                Log.write("automation permission \(bundle) status \(status)")
+                DispatchQueue.main.async { MainActor.assumeIsolated { self.overlays.refreshInfo() } }
+            }
         }
     }
+    private var asked = Set<String>()
 
     func applicationWillTerminate(_ notification: Notification) {
         overlays.restoreAllHaywire()
         overlays.restoreAll()
-        TerminalScript.drain()
+        Backend.drain()
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
@@ -80,7 +94,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Window
     func raiseGroup(at index: Int) {
         let groups = Store.shared.groups
         guard index < groups.count else { NSSound.beep(); return }
-        TerminalScript.raise(Store.shared.windows(in: groups[index]))
+        Backend.raise(Store.shared.windows(in: groups[index]))
     }
 
     func tileFrontGroup() {
@@ -107,7 +121,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Window
             let r = i / cols, c = i % cols
             items.append((id, CGRect(x: area.minX + CGFloat(c) * (cw + gap), y: area.minY + CGFloat(r) * (ch + gap), width: cw, height: ch)))
         }
-        TerminalScript.setBounds(items)
+        Backend.setBounds(items)
     }
 
     /// placard://label?name=API&tty=/dev/ttys003   (or &window=12345)
@@ -123,7 +137,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Window
 
         func withWindow(_ body: @escaping (Int) -> Void) {
             if let w = q["window"].flatMap(Int.init) { body(w) }
-            else if let tty = q["tty"], !tty.isEmpty { TerminalScript.window(forTTY: tty) { if let id = $0 { body(id) } } }
+            else if let tty = q["tty"], !tty.isEmpty { Backend.window(forTTY: tty) { if let id = $0 { body(id) } } }
             else if let w = Windows.frontTerminalWindow() { body(w.id) }
         }
 
@@ -134,7 +148,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Window
             self.prompt.show(.label(window: id, frame: f)) {}
         }
         case "unlabel": withWindow { Store.shared.unlabel(window: $0) }
-        case "raise": if let g = Store.shared.group(named: name) { TerminalScript.raise(Store.shared.windows(in: g)) }
+        case "raise": if let g = Store.shared.group(named: name) { Backend.raise(Store.shared.windows(in: g)) }
         case "tile": if let g = Store.shared.group(named: name) { tile(g) }
         default: break
         }
@@ -155,7 +169,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Window
 
         let groups = Store.shared.groups
         if groups.isEmpty {
-            let empty = NSMenuItem(title: "No labels yet. Press \u{2303}\u{2325}L in a Terminal window.", action: nil, keyEquivalent: "")
+            let empty = NSMenuItem(title: "No labels yet. Press \u{2303}\u{2325}L in a terminal window.", action: nil, keyEquivalent: "")
             empty.isEnabled = false
             menu.addItem(empty)
         }
@@ -222,7 +236,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Window
     }
 
     @objc private func menuLabel() { DispatchQueue.main.async { self.labelFrontWindow() } }
-    @objc private func menuRaise(_ s: NSMenuItem) { if let g = group(s) { TerminalScript.raise(Store.shared.windows(in: g)) } }
+    @objc private func menuRaise(_ s: NSMenuItem) { if let g = group(s) { Backend.raise(Store.shared.windows(in: g)) } }
     @objc private func menuTile(_ s: NSMenuItem) { if let g = group(s) { tile(g) } }
     @objc private func menuDissolve(_ s: NSMenuItem) { if let g = group(s) { Store.shared.dissolve(g) } }
     @objc private func menuRename(_ s: NSMenuItem) {
@@ -302,7 +316,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Window
             menu.addItem(item("New Emoji") { Store.shared.shuffleEmoji(window) })
             menu.addItem(.separator())
             let idx = groups.firstIndex { $0.id == g.id } ?? 99
-            menu.addItem(item("Bring Group to Front", key: idx < 9 ? "\(idx + 1)" : "") { TerminalScript.raise(Store.shared.windows(in: g)) })
+            menu.addItem(item("Bring Group to Front", key: idx < 9 ? "\(idx + 1)" : "") { Backend.raise(Store.shared.windows(in: g)) })
             menu.addItem(item("Tile Group", key: "t") { [weak self] in self?.tile(g) })
             let others = groups.filter { $0.id != g.id }
             let move = NSMenuItem(title: "Move Window To", action: nil, keyEquivalent: "")

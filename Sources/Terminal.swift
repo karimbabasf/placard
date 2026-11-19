@@ -31,8 +31,35 @@ enum Windows {
     }
 
     /// On-screen windows, front to back: the Terminal ones, plus every window id in z-order.
+    /// Every running terminal app Placard knows: Terminal.app plus the others.
+    /// Cached for a second, because the overlay asks every frame.
+    private static var appsCache: (at: CFTimeInterval, apps: [NSRunningApplication]) = (0, [])
+    static var apps: [NSRunningApplication] {
+        let now = CACurrentMediaTime()
+        if now - appsCache.at > 1 {
+            let ids = Set([bundleID] + Others.bundleIDs)
+            var found = NSWorkspace.shared.runningApplications.filter { ids.contains($0.bundleIdentifier ?? "") && !$0.isTerminated }
+            if let t = terminalApp, !found.contains(where: { $0.processIdentifier == t.processIdentifier }) { found.append(t) }
+            appsCache = (now, found)
+        }
+        return appsCache.apps
+    }
+    static var pids: Set<Int32> { Set(apps.map(\.processIdentifier)) }
+
+    /// Brings back the app that owns the frontmost terminal window.
+    static func activateFront() {
+        let front = snapshot().terminal.first
+        let pid = front.flatMap { w -> Int32? in
+            var ptrs: [UnsafeRawPointer?] = [UnsafeRawPointer(bitPattern: UInt(w.id))]
+            guard let arr = CFArrayCreate(nil, &ptrs, 1, nil) else { return nil }
+            return (CGWindowListCreateDescriptionFromArray(arr) as? [[String: Any]])?.first?[kCGWindowOwnerPID as String] as? Int32
+        }
+        (pid.flatMap { NSRunningApplication(processIdentifier: $0) } ?? terminalApp)?.activate()
+    }
+
     static func snapshot() -> (terminal: [TermWindow], order: [Int]) {
-        guard let pid = terminalApp?.processIdentifier,
+        let pids = pids
+        guard !pids.isEmpty,
               let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]
         else { return ([], []) }
         var term: [TermWindow] = []
@@ -40,7 +67,7 @@ enum Windows {
         for w in list {
             guard let num = w[kCGWindowNumber as String] as? Int else { continue }
             order.append(num)
-            guard (w[kCGWindowOwnerPID as String] as? Int32) == pid,
+            guard let owner = w[kCGWindowOwnerPID as String] as? Int32, pids.contains(owner),
                   (w[kCGWindowLayer as String] as? Int) == 0,
                   let b = w[kCGWindowBounds as String] as? NSDictionary,
                   let r = CGRect(dictionaryRepresentation: b),
@@ -53,11 +80,12 @@ enum Windows {
 
     /// Every Terminal window that still exists, on any Space, minimized or not.
     static func allTerminalIDs() -> Set<Int>? {
-        guard let pid = terminalApp?.processIdentifier,
+        let pids = pids
+        guard !pids.isEmpty,
               let list = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]]
         else { return nil }
         var ids = Set<Int>()
-        for w in list where (w[kCGWindowOwnerPID as String] as? Int32) == pid && (w[kCGWindowLayer as String] as? Int) == 0 {
+        for w in list where pids.contains(w[kCGWindowOwnerPID as String] as? Int32 ?? -1) && (w[kCGWindowLayer as String] as? Int) == 0 {
             if let n = w[kCGWindowNumber as String] as? Int { ids.insert(n) }
         }
         return ids
@@ -130,7 +158,7 @@ enum TerminalScript {
 
     static func list(_ ints: [Int]) -> String { "{" + ints.map(String.init).joined(separator: ", ") + "}" }
 
-    struct Info { let title: String; let bg: [Int]; let busy: Bool; let prompt: Bool }
+    struct Info { let title: String; let bg: [Int]; let busy: Bool; let prompt: Bool; var tty: String? = nil }
 
     /// AppleScript: sets `flag` to "1" when window `w`, titled `n`, shows a Claude prompt.
     private static let promptCheck = """
@@ -138,7 +166,7 @@ enum TerminalScript {
               if n contains (character id 10035) then
                 set c to contents of selected tab of w
                 if length of c > 3000 then set c to text -3000 thru -1 of c
-                if c contains "Do you want to" or c contains "Would you like to proceed" or c contains "Enter to select" or c contains "Esc to cancel" then set flag to "1"
+                if \(Prompts.markers.map { "c contains \"\($0)\"" }.joined(separator: " or ")) then set flag to "1"
               end if
     """
 
@@ -154,7 +182,7 @@ enum TerminalScript {
               set n to name of w
         \(promptCheck)
               set bg to background color of tab 1 of w
-              set out to out & (id of w) & T & n & T & (item 1 of bg) & "," & (item 2 of bg) & "," & (item 3 of bg) & T & (busy of selected tab of w) & T & flag & NL
+              set out to out & (id of w) & T & n & T & (item 1 of bg) & "," & (item 2 of bg) & "," & (item 3 of bg) & T & (busy of selected tab of w) & T & flag & T & (tty of selected tab of w) & NL
             end try
           end repeat
           return out
@@ -166,7 +194,7 @@ enum TerminalScript {
                 let parts = line.components(separatedBy: "\t")
                 guard parts.count >= 5, let id = Int(parts[0]) else { continue }
                 let bg = parts[2].split(separator: ",").compactMap { Int($0) }
-                map[id] = Info(title: parts[1], bg: bg, busy: parts[3] == "true", prompt: parts[4] == "1")
+                map[id] = Info(title: parts[1], bg: bg, busy: parts[3] == "true", prompt: parts[4] == "1", tty: parts.count > 5 ? parts[5] : nil)
             }
             completion(map)
         }
@@ -396,26 +424,102 @@ enum TerminalScript {
         return busy ? .running : .none
     }
 
-    /// Label for a window whose agent just got its first task title: an open group the
-    /// title mentions, else the project folder, else the first two real words of the task.
-    static func autoName(title: String, groups: [Group]) -> String? {
+    struct AutoPick: Equatable {
+        let name: String
+        var shorten: Group? = nil   // an auto-named group to cut to the shared word
+    }
+
+    private static let stopWords: Set<String> = [
+        "a", "an", "the", "for", "to", "of", "and", "in", "on", "with", "my", "is", "it", "this", "that", "how", "what", "why",
+        "fix", "make", "add", "build", "update", "check", "write", "debug", "review", "create", "help", "set", "get", "run",
+        "test", "find", "look", "show", "change", "move", "remove", "delete", "improve", "clean", "refactor", "implement",
+        "start", "stop", "finish", "use", "try", "please", "can", "could", "you", "me", "we", "let", "lets", "new", "now",
+        "just", "quick", "also", "still", "so", "like", "really", "ok", "okay", "hey", "hi", "do", "work", "working",
+    ]
+
+    /// Folder names too generic to name a project after.
+    private static let genericFolders: Set<String> = [
+        "developer", "projects", "project", "code", "src", "source", "dev", "repos", "repo", "git", "github", "work",
+        "sites", "desktop", "documents", "downloads", "tmp", "temp", "scratch", "scratchpad", "app", "apps", "test",
+        "tests", "docs", "notes", "web", "api", "site", "main", "old", "new", "build", "dist", "lib", "bin", "private",
+    ]
+
+    /// Group for a window whose agent just got its first task title, in order:
+    /// a group the task names; the project the agent runs in (git root of its
+    /// working directory); a project folder the task names; an auto-named group
+    /// whose first word the task leads with; else the first two real words.
+    static func autoName(title: String, cwd: String?, groups: [Group], projects: [String] = Projects.names()) -> AutoPick? {
         let task = subtitle(from: title)
         guard !task.isEmpty, task.caseInsensitiveCompare("Claude Code") != .orderedSame else { return nil }
         let lower = task.lowercased()
-        if let g = groups.first(where: { g in
-            let n = g.name.lowercased()
-            return lower.hasPrefix(n) || lower.contains(" " + n) || lower.contains("(" + n)
-        }) { return g.name }
-        let dir = title.components(separatedBy: " \u{2014} ").first?.trimmingCharacters(in: .whitespaces) ?? ""
-        if !dir.isEmpty, dir != NSUserName(), dir != "~", !dir.hasPrefix("-") { return String(dir.prefix(24)) }
-        let stop: Set<String> = ["a", "an", "the", "for", "to", "of", "and", "in", "on", "with", "my", "is", "it", "this", "that", "how", "what", "why"]
-        let words = task.split(separator: " ").map(String.init).filter { w in
-            !stop.contains(w.lowercased()) && w.rangeOfCharacter(from: .letters) != nil
+        func mentions(_ name: String) -> Bool {
+            let n = name.lowercased()
+            guard !n.isEmpty else { return false }
+            let pattern = "(?<![\\p{L}\\p{N}])" + NSRegularExpression.escapedPattern(for: n) + "(?![\\p{L}\\p{N}])"
+            return lower.range(of: pattern, options: .regularExpression) != nil
+        }
+        /// A project joins the group it belongs to: "lushair-admin" joins "Lushair",
+        /// and "placard" joins an auto-named "Placard Background" (cut to "Placard").
+        func joining(_ project: String) -> AutoPick {
+            let p = project.lowercased()
+            if let g = groups.first(where: { g in
+                let n = g.name.lowercased()
+                return p == n || p.hasPrefix(n + "-") || p.hasPrefix(n + "_") || p.hasPrefix(n + ".")
+            }) { return AutoPick(name: g.name) }
+            if let g = groups.first(where: { $0.auto == true && $0.name.split(separator: " ").first?.lowercased() == p }) {
+                return AutoPick(name: g.name, shorten: g)
+            }
+            return AutoPick(name: display(project))
+        }
+
+        if let g = groups.sorted(by: { $0.name.count > $1.name.count }).first(where: { mentions($0.name) }) { return AutoPick(name: g.name) }
+        if let p = project(cwd: cwd) ?? titleFolder(title) { return joining(p) }
+        if let p = projects.filter({ $0.count >= 4 && mentions($0) }).max(by: { $0.count < $1.count }) { return joining(p) }
+
+        let words = task.split(whereSeparator: { $0 == " " || $0 == "/" || $0 == ":" || $0 == "," }).map(String.init).filter { w in
+            !stopWords.contains(w.lowercased()) && w.rangeOfCharacter(from: .letters) != nil
+        }
+        for w in words.prefix(2) where w.count >= 4 {
+            if let g = groups.first(where: { $0.name.split(separator: " ").first?.lowercased() == w.lowercased() }) {
+                let multi = g.name.contains(" ")
+                return AutoPick(name: g.name, shorten: g.auto == true && multi ? g : nil)
+            }
         }
         guard !words.isEmpty else { return nil }
-        return words.prefix(2).map { w in
-            w.first.map { $0.isLowercase ? $0.uppercased() + w.dropFirst() : w } ?? w
-        }.joined(separator: " ")
+        return AutoPick(name: words.prefix(2).map(display).joined(separator: " "))
+    }
+
+    static func isGenericFolder(_ name: String) -> Bool { genericFolders.contains(name.lowercased()) }
+
+    /// "lushair" reads as "Lushair"; names with their own capitals stay.
+    static func display(_ name: String) -> String {
+        guard let f = name.first, name == name.lowercased() else { return name }
+        return f.uppercased() + name.dropFirst()
+    }
+
+    /// The git root (or folder) an agent works in; nil for home and generic folders.
+    static func project(cwd: String?) -> String? {
+        guard var dir = cwd, !dir.isEmpty else { return nil }
+        let home = NSHomeDirectory()
+        if dir.hasSuffix("/") && dir.count > 1 { dir.removeLast() }
+        guard dir != home, dir != "/" else { return nil }
+        var cur = dir
+        while cur.count > home.count, cur != "/" {
+            if FileManager.default.fileExists(atPath: cur + "/.git") { dir = cur; break }
+            cur = (cur as NSString).deletingLastPathComponent
+        }
+        let name = (dir as NSString).lastPathComponent
+        guard !name.isEmpty, !name.hasPrefix("."), !genericFolders.contains(name.lowercased()) else { return nil }
+        return String(name.prefix(24))
+    }
+
+    /// Terminal can show the folder as the first part of its title.
+    private static func titleFolder(_ title: String) -> String? {
+        let parts = title.components(separatedBy: " \u{2014} ")
+        guard parts.count > 1 else { return nil }
+        let dir = parts[0].trimmingCharacters(in: .whitespaces)
+        guard !dir.isEmpty, dir != NSUserName(), dir != "~", !dir.hasPrefix("-"), !genericFolders.contains(dir.lowercased()) else { return nil }
+        return String(dir.prefix(24))
     }
 
     /// Short readable subtitle from a Terminal window title. Terminal joins the
@@ -429,6 +533,40 @@ enum TerminalScript {
             return task.trimmingCharacters(in: glyphs)
         }
         if parts.count > 1 { return parts[1].trimmingCharacters(in: glyphs) }
-        return parts.first ?? ""
+        // Ghostty, iTerm2 and the rest show the program's title alone: "✳ Task".
+        return (parts.first ?? "").trimmingCharacters(in: glyphs)
+    }
+}
+
+/// Project folder names under the usual code roots, so a task that names one
+/// ("fix the lushair checkout") lands in that project's group.
+enum Projects {
+    nonisolated(unsafe) private static var cache: (at: Date, names: [String]) = (.distantPast, [])
+    private static let roots = ["Developer", "Projects", "projects", "Code", "code", "src", "dev", "repos", "git", "GitHub", "Documents/GitHub", "work", "Sites"]
+
+    static func names() -> [String] {
+        if Date().timeIntervalSince(cache.at) < 60 { return cache.names }
+        let fm = FileManager.default
+        let home = NSHomeDirectory()
+        var out = Set<String>()
+        func dirs(_ path: String) -> [String] {
+            ((try? fm.contentsOfDirectory(atPath: path)) ?? []).filter { n in
+                var isDir: ObjCBool = false
+                return !n.hasPrefix(".") && n != "node_modules" && fm.fileExists(atPath: path + "/" + n, isDirectory: &isDir) && isDir.boolValue
+            }
+        }
+        for r in roots {
+            let root = home + "/" + r
+            for d in dirs(root) {
+                out.insert(d)
+                // one level deeper only for real repos: ~/Developer/Apps/placard
+                if !fm.fileExists(atPath: root + "/" + d + "/.git") {
+                    for d2 in dirs(root + "/" + d) where fm.fileExists(atPath: root + "/" + d + "/" + d2 + "/.git") { out.insert(d2) }
+                }
+            }
+        }
+        let names = out.filter { !TerminalScript.isGenericFolder($0) }.sorted()
+        cache = (Date(), names)
+        return names
     }
 }

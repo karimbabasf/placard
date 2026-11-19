@@ -160,6 +160,12 @@ final class ControlView: NSView {
     }
 }
 
+/// CADisplayLink needs an NSObject target.
+final class LinkTarget: NSObject {
+    var onFrame: (@MainActor () -> Void)?
+    @objc func step(_ link: CADisplayLink) { MainActor.assumeIsolated { onFrame?() } }
+}
+
 @MainActor
 final class OverlayManager {
     private final class Slot {
@@ -174,8 +180,14 @@ final class OverlayManager {
     private var slots: [Int: Slot] = [:]
     private var info: [Int: TerminalScript.Info] = [:]
     private var parsed: [Int: (subtitle: String, state: WorkState)] = [:]
-    private var timer: Timer?
-    private var ticks = 0
+    private var link: CADisplayLink?
+    private let linkTarget = LinkTarget()
+    private var lastInfoAt: CFTimeInterval = 0
+    private var lastKeepAt: CFTimeInterval = 0
+    private var lastWatchAt: CFTimeInterval = 0
+    private var lastIdleFrame: CFTimeInterval = 0
+    /// The window being dragged by its title bar: where it and the mouse were at mouse down.
+    private var drag: (id: Int, frame: CGRect, mouse: CGPoint)?
     private var quietUntil = Date.distantPast
     private let ownPID = ProcessInfo.processInfo.processIdentifier
     private var polling = false
@@ -202,10 +214,13 @@ final class OverlayManager {
     }
 
     func start() {
-        timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.tick() }
+        // Tick on the display's own refresh (120 Hz on ProMotion), not a 60 Hz
+        // timer that drifts against it: the strip moves in the same frame as the window.
+        linkTarget.onFrame = { [weak self] in self?.tick() }
+        startLink()
+        NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.startLink() }
         }
-        RunLoop.main.add(timer!, forMode: .common)
         let ws = NSWorkspace.shared.notificationCenter
         ws.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
             // With several displays this fires on every click into another display,
@@ -215,8 +230,13 @@ final class OverlayManager {
         ws.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.burst(0.5) }
         }
-        NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp, .rightMouseDown, .keyDown]) { [weak self] _ in
-            MainActor.assumeIsolated { self?.burst() }
+        NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp, .rightMouseDown, .keyDown]) { [weak self] e in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.burst()
+                if e.type == .leftMouseDown { self.beginDrag() }
+                if e.type == .leftMouseUp { self.drag = nil }
+            }
         }
         // A Placard that was killed mid-flash left these windows in flash colors:
         // the first tick puts them back.
@@ -239,6 +259,7 @@ final class OverlayManager {
 
     private func scene() -> [SceneWindow] {
         guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return [] }
+        let screens = NSScreen.screens.map { Windows.cgRect($0.frame) }
         return list.compactMap { w in
             guard let id = w[kCGWindowNumber as String] as? Int,
                   let pid = w[kCGWindowOwnerPID as String] as? Int32,
@@ -247,36 +268,41 @@ final class OverlayManager {
                   let r = CGRect(dictionaryRepresentation: b),
                   (w[kCGWindowAlpha as String] as? Double ?? 1) > 0.01
             else { return nil }
+            // A window exactly the size of a screen from a non-terminal app is a
+            // see-through overlay (agent cursors, screen tools), not a cover.
+            if !Windows.pids.contains(pid), screens.contains(r) { return nil }
             return SceneWindow(id: id, pid: pid, layer: layer, frame: r)
         }
     }
 
     func tick() {
         let store = Store.shared
-        ticks += 1
-        if ticks % 75 == 0 { refreshInfo() }                // titles and status, every 1.25 s
-        if ticks % 300 == 0, let alive = Windows.allTerminalIDs() { store.keepOnly(windows: alive) }
+        let now = CACurrentMediaTime()
+        if now - lastInfoAt >= 1.25 { lastInfoAt = now; refreshInfo() }      // titles and status
+        if now - lastKeepAt >= 5, let alive = Windows.allTerminalIDs() { lastKeepAt = now; store.keepOnly(windows: alive) }
 
-        guard let tpid = Windows.terminalApp?.processIdentifier else {
-            if !slots.isEmpty { Log.write("slots cleared: Terminal not found"); slots.values.forEach { $0.strip.orderOut(nil); $0.control.orderOut(nil) }; slots.removeAll() }
+        let tpids = Windows.pids
+        guard !tpids.isEmpty else {
+            if !slots.isEmpty { Log.write("slots cleared: no terminal running"); slots.values.forEach { $0.strip.orderOut(nil); $0.control.orderOut(nil) }; slots.removeAll() }
             return
         }
         // Stop a flash the moment its window stops waiting, on screen or not.
         for id in haywireDirty where !wantsFlash(id) {
             if let run = haywireRuns[id] { run.cancel() } else { endHaywire(id) }
         }
-        if !haywireDirty.isEmpty && ticks % 15 == 0 { watchFlashing() }   // 4 Hz, only while one flashes
+        if !haywireDirty.isEmpty && now - lastWatchAt >= 0.25 { lastWatchAt = now; watchFlashing() }   // 4 Hz, only while one flashes
 
         // Terminal windows = what Terminal's scripting reports (skips its Settings
         // window), plus anything labeled.
-        let now = CACurrentMediaTime()
         // Full rate only around activity (clicks, keys, drags, moves, reorders);
         // otherwise 15 Hz is plenty and keeps the process near idle.
-        if now > activeUntil && NSEvent.pressedMouseButtons == 0 && ticks % 4 != 0 { return }
+        if now > activeUntil && NSEvent.pressedMouseButtons == 0 && now - lastIdleFrame < 1.0 / 15 { return }
+        lastIdleFrame = now
         let known = Set(info.keys).union(store.labeledWindows)
-        let raw = Windows.frames(for: Array(known))
+        var raw = Windows.frames(for: Array(known))
         let moved = raw != lastRaw
         lastRaw = raw
+        predictDrag(&raw)
         // Window ids only, no dictionaries: cheap enough to run every frame and
         // catches any z-order change the moment it lands.
         let order = Self.windowOrder()
@@ -290,7 +316,7 @@ final class OverlayManager {
         }
         let quiet = Date() < quietUntil
         var index: [Int: Int] = [:]
-        for (i, w) in scene_.enumerated() where w.pid == tpid && raw[w.id] != nil { index[w.id] = i }
+        for (i, w) in scene_.enumerated() where tpids.contains(w.pid) && raw[w.id] != nil { index[w.id] = i }
         let hidden = store.hidden
 
         for (id, frame) in raw {
@@ -389,6 +415,43 @@ final class OverlayManager {
 
     private var missing: [Int: Int] = [:]
 
+    private func startLink() {
+        link?.invalidate()
+        let screen = NSScreen.screens.max { $0.maximumFramesPerSecond < $1.maximumFramesPerSecond } ?? NSScreen.main
+        guard let l = screen?.displayLink(target: linkTarget, selector: #selector(LinkTarget.step)) else { return }
+        l.add(to: .main, forMode: .common)
+        link = l
+    }
+
+    private static func mouseCG() -> CGPoint {
+        let m = NSEvent.mouseLocation
+        return CGPoint(x: m.x, y: Windows.primaryHeight - m.y)
+    }
+
+    /// A mouse down in a terminal window's title bar may start a drag.
+    private func beginDrag() {
+        let m = Self.mouseCG()
+        let front = scene_.first { $0.frame.contains(m) && $0.pid != ownPID && $0.layer == 0 }
+        guard let w = front, let f = lastRaw[w.id], m.y - f.minY < StripMetrics.titleBar + 6 else { drag = nil; return }
+        drag = (w.id, f, m)
+    }
+
+    /// WindowServer reports a dragged window's frame a frame or two late. The
+    /// mouse is current, and a title bar drag moves the window by exactly the
+    /// mouse's travel, so place it from the mouse. A snap, a clamp at the menu
+    /// bar or any resize falls back to the reported frame.
+    private func predictDrag(_ raw: inout [Int: CGRect]) {
+        guard let d = drag, NSEvent.pressedMouseButtons & 1 != 0, let r = raw[d.id],
+              r.size == d.frame.size, r.origin != d.frame.origin else { return }
+        let m = Self.mouseCG()
+        var p = d.frame.offsetBy(dx: m.x - d.mouse.x, dy: m.y - d.mouse.y)
+        // macOS keeps the title bar below the menu bar.
+        if let s = NSScreen.screens.first(where: { Windows.cgRect($0.frame).contains(m) }) {
+            p.origin.y = max(p.origin.y, Windows.cgRect(s.visibleFrame).minY)
+        }
+        if abs(p.minX - r.minX) < 160 && abs(p.minY - r.minY) < 160 { raw[d.id] = p }
+    }
+
     private func cutsFor(_ id: Int, _ rect: CGRect, _ index: [Int: Int]) -> [CGRect] {
         guard let i = index[id] else { return [] }
         var out: [CGRect] = []
@@ -425,10 +488,10 @@ final class OverlayManager {
     func terminalTask(for id: Int) -> String { parsed[id]?.subtitle ?? "" }
 
     func refreshInfo() {
-        guard !polling, Windows.terminalApp != nil else { return }
+        guard !polling, !Windows.pids.isEmpty else { return }
         polling = true
         let began = CACurrentMediaTime()
-        TerminalScript.titles { [weak self] map in
+        Backend.titles { [weak self] map in
             guard let self else { return }
             self.polling = false
             self.info = map
@@ -453,7 +516,7 @@ final class OverlayManager {
         watching = true
         let began = CACurrentMediaTime()
         let ids = Array(haywireDirty)
-        TerminalScript.watch(ids) { [weak self] seen in
+        Backend.watch(ids) { [weak self] seen in
             guard let self else { return }
             self.watching = false
             // Failed, or a full poll that began later has already landed: drop it.
@@ -480,12 +543,21 @@ final class OverlayManager {
     private func autoLabel() {
         let store = Store.shared
         guard store.auto else { return }
+        var procs: Procs?
         for (id, i) in info where store.group(forWindow: id) == nil && !store.isSkipped(id) {
             let st = parsed[id]?.state ?? .none
-            guard st == .working || st == .yourTurn || st == .needsYou,
-                  let name = TerminalScript.autoName(title: i.title, groups: store.groups) else { continue }
-            store.label(window: id, name: name, color: nil)
-            Log.write("auto-labeled \(id) as \(name)")
+            guard st == .working || st == .yourTurn || st == .needsYou else { continue }
+            if procs == nil { procs = Procs.all() }
+            let cwd = i.tty.flatMap { procs?.cwd(tty: $0) }
+            guard let pick = TerminalScript.autoName(title: i.title, cwd: cwd, groups: store.groups) else { continue }
+            store.label(window: id, name: pick.name, color: nil, auto: true)
+            // A second "Placard ..." window turns "Placard Background" into "Placard".
+            if let g = pick.shorten, let word = g.name.split(separator: " ").first.map(String.init),
+               let current = store.groups.first(where: { $0.id == g.id }) {
+                store.rename(current, to: word, color: current.color)
+                Log.write("auto-group \(g.name) renamed to \(word)")
+            }
+            Log.write("auto-labeled \(id) as \(pick.name)" + (cwd.map { " (cwd \($0))" } ?? ""))
         }
     }
 
@@ -501,13 +573,13 @@ final class OverlayManager {
             let want = Palette.tint(g.color, over: store.original(for: id) ?? current)
             // Terminal rounds colors on the way back; only write on a real change.
             let off = zip(current, want).map { abs($0 - $1) }.max() ?? .max
-            if current.count != 3 || off > 600 { TerminalScript.setBackground(id, want) }
+            if current.count != 3 || off > 600 { Backend.setBackground(id, want) }
         }
     }
 
     // MARK: Christmas mode: the window's background and text cycle colors.
 
-    private var haywireRuns: [Int: TerminalScript.Flash] = [:]   // the cycle running now, per window
+    private var haywireRuns: [Int: FlashRun] = [:]   // the cycle running now, per window
     private var haywireDirty = Set<Int>()                        // windows whose colors are not their own
     private var watching = false
     private var pollBegan: CFTimeInterval = 0                    // when the poll behind `info` started
@@ -524,7 +596,7 @@ final class OverlayManager {
             Log.write("flash start \(id)")
         }
         clearedAt[id] = nil
-        haywireRuns[id] = TerminalScript.haywire(id) { [weak self] in
+        haywireRuns[id] = Backend.haywire(id) { [weak self] in
             guard let self else { return }
             self.haywireRuns[id] = nil
             if !self.wantsFlash(id) { self.endHaywire(id) }
@@ -539,7 +611,7 @@ final class OverlayManager {
         var bg = store.original(for: id)
         if let g = store.group(forWindow: id), store.tint, !store.hidden, let base = bg { bg = Palette.tint(g.color, over: base) }
         let cleared = clearedAt.removeValue(forKey: id)
-        TerminalScript.restoreColors(id, bg: bg) { [weak self] _ in
+        Backend.restoreColors(id, bg: bg) { [weak self] in
             let now = CACurrentMediaTime()
             self?.cleanSince[id] = now
             Log.write("flash stop \(id)" + (cleared.map { ", colors back \(Int((now - $0) * 1000)) ms after the prompt went" } ?? ""))
@@ -553,7 +625,7 @@ final class OverlayManager {
 
     func restoreBackground(_ id: Int) {
         guard let orig = Store.shared.original(for: id) else { return }
-        TerminalScript.setBackground(id, orig)
+        Backend.resetBackground(id, orig)
         Store.shared.setOriginal(nil, for: id)
     }
 

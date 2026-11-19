@@ -266,7 +266,7 @@ final class PromptController: NSObject, NSTextFieldDelegate {
         guard let p = panel else { return }
         panel = nil
         p.orderOut(nil)
-        if restoreFocus { Windows.terminalApp?.activate() }
+        if restoreFocus { Windows.activateFront() }
         onDone?()
     }
 }

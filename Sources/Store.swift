@@ -104,6 +104,7 @@ struct Group: Codable, Equatable {
     var name: String
     var color: Int
     var pinned: Bool? = nil      // color chosen by hand
+    var auto: Bool? = nil        // named by auto-label, not by hand
 }
 
 struct Saved: Codable {
@@ -248,7 +249,7 @@ final class Store {
 
     /// Joins an existing group by name, or creates one. Returns the group.
     @discardableResult
-    func label(window id: Int, name: String, color: Int?, pinned: Bool = false) -> Group {
+    func label(window id: Int, name: String, color: Int?, pinned: Bool = false, auto: Bool = false) -> Group {
         let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
         var g: Group
         if let existing = group(named: clean) {
@@ -259,7 +260,7 @@ final class Store {
                 g = saved.groups[i]
             }
         } else {
-            g = Group(id: UUID(), name: clean, color: color ?? nextFreeColor(), pinned: pinned && color != nil ? true : nil)
+            g = Group(id: UUID(), name: clean, color: color ?? nextFreeColor(), pinned: pinned && color != nil ? true : nil, auto: auto ? true : nil)
             saved.groups.append(g)
         }
         saved.windows[String(id)] = g.id
@@ -287,6 +288,7 @@ final class Store {
             if let j = saved.groups.firstIndex(where: { $0.id == other.id }) { saved.groups[j].color = color }
         } else {
             saved.groups[i].name = clean
+            saved.groups[i].auto = nil
             if pinned || color != saved.groups[i].color { saved.groups[i].color = color }
             if pinned { saved.groups[i].pinned = true }
         }
