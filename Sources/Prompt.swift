@@ -218,7 +218,12 @@ final class PromptController: NSObject, NSTextFieldDelegate {
         for c in chips { c.highlighted = c.group.id == match?.id }
         if !colorTouched {
             if let m = match { setColor(m.color, touched: false) }
-            else if case .label = mode, !name.isEmpty { setColor(Store.shared.nextFreeColor(), touched: false) }
+            else if case .label(let id, _) = mode, !name.isEmpty {
+                // Alone in its group, a new name is a rename and keeps the color; else a new group gets a free one.
+                let store = Store.shared
+                if let g = store.group(forWindow: id), store.windows(in: g) == [id] { setColor(g.color, touched: false) }
+                else { setColor(store.nextFreeColor(), touched: false) }
+            }
         }
         updatePreview()
     }

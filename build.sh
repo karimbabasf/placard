@@ -14,6 +14,8 @@ codesign --force --sign - "$APP" >/dev/null
 echo "built $APP"
 if [ "$1" = "--install" ]; then
   pkill -x Placard 2>/dev/null || true
+  # let the old copy restore window colors before the new one reads them
+  for _ in $(seq 30); do pgrep -x Placard >/dev/null || break; sleep 0.1; done
   mkdir -p "$HOME/Applications"
   rm -rf "$HOME/Applications/Placard.app"
   cp -R "$APP" "$HOME/Applications/Placard.app"

@@ -7,9 +7,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Window
     private var statusItem: NSStatusItem!
     private let overlays = OverlayManager()
     private let prompt = PromptController()
+    private var termSource: DispatchSourceSignal?
 
     func applicationDidFinishLaunching(_ note: Notification) {
         Fonts.register()
+
+        // kill, logout and build.sh --install send SIGTERM: quit cleanly so tints and flash colors are restored.
+        signal(SIGTERM, SIG_IGN)
+        termSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        termSource?.setEventHandler { MainActor.assumeIsolated { NSApp.terminate(nil) } }
+        termSource?.resume()
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         let img = NSImage(systemSymbolName: "rectangle.stack.fill", accessibilityDescription: "Placard")
@@ -73,6 +80,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Window
         overlays.restoreAllHaywire()
         overlays.restoreAll()
         Backend.drain()
+        Log.write("quit: colors restored")
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
