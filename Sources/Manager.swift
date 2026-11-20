@@ -467,8 +467,9 @@ final class OverlayManager {
     private func anchor(_ id: Int) -> CGRect { lastRaw[id] ?? .zero }
 
     private func primary(_ id: Int) {
-        if Store.shared.group(forWindow: id) != nil { actions?.renameGroup(of: id, anchor: anchor(id)) }
-        else { actions?.labelWindow(id, anchor: anchor(id)) }
+        // Names this window only: a new name starts a new group, an existing one joins it.
+        // Renaming the whole group lives in the menu.
+        actions?.labelWindow(id, anchor: anchor(id))
     }
 
     private func showMenu(_ id: Int) {

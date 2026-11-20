@@ -36,7 +36,8 @@ That builds `Placard.app`, copies it to `~/Applications`, puts the `placard` com
 | To | Do |
 |---|---|
 | Label a window | Click the `+` at the right end of its title bar, or press `⌃⌥L` |
-| Rename a group | Click the name on the strip |
+| Move a window to a new or other group | Click the name on the strip and type a name |
+| Rename a whole group | Menu: Rename Group |
 | Rename a task | Click the task text on the strip (empty goes back to the Terminal title) |
 | Open the window menu | Click the chevron, or right-click the strip |
 | Bring a group to front | `⌃⌥1` to `⌃⌥9`, or the menu |

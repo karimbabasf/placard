@@ -216,7 +216,10 @@ final class PromptController: NSObject, NSTextFieldDelegate {
         let name = field.stringValue.trimmingCharacters(in: .whitespaces)
         let match = others.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }
         for c in chips { c.highlighted = c.group.id == match?.id }
-        if let m = match, !colorTouched { setColor(m.color, touched: false) }
+        if !colorTouched {
+            if let m = match { setColor(m.color, touched: false) }
+            else if case .label = mode, !name.isEmpty { setColor(Store.shared.nextFreeColor(), touched: false) }
+        }
         updatePreview()
     }
 
