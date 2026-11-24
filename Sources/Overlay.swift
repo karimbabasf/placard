@@ -86,6 +86,7 @@ final class StripView: NSView {
         var subtitle = ""
         var color = 0
         var state: WorkState = .none
+        var dark = false
     }
 
     private(set) var model = Model()
@@ -171,7 +172,7 @@ final class StripView: NSView {
         let old = model
         model = m
         configured = true
-        let ink = Palette.ink(m.color, dull: m.state != .working && m.state != .needsYou)
+        let ink = Palette.ink(m.color, dull: m.state != .working && m.state != .needsYou, dark: m.dark)
         CATransaction.begin()
         CATransaction.setDisableActions(old.color == m.color)
         nameLayer.foregroundColor = ink.cgColor
@@ -185,7 +186,11 @@ final class StripView: NSView {
         statusLayer.string = Self.statusText(m.state)
         CATransaction.commit()
         if old.state != m.state { applyState() }
-        if old.color != m.color { fillKey = "" }
+        if old.color != m.color || old.dark != m.dark { fillKey = "" }
+        if old.dark != m.dark {
+            let a: CGFloat = m.dark ? 0.10 : 0.16   // a white band reads brighter on a deep fill
+            shimmer.colors = [NSColor(white: 1, alpha: 0).cgColor, NSColor(white: 1, alpha: a).cgColor, NSColor(white: 1, alpha: 0).cgColor]
+        }
         needsLayout = true
     }
 
@@ -258,7 +263,7 @@ final class StripView: NSView {
         body.frame = bounds
         fill.frame = bounds
         let dull = model.state != .working && model.state != .needsYou
-        let key = "\(model.color)-\(dull)-\(Int(bounds.width))-\(Int(bounds.height))"
+        let key = "\(model.color)-\(dull)-\(model.dark)-\(Int(bounds.width))-\(Int(bounds.height))"
         if key != fillKey {
             // Working strips are bright; everything else fades to a dull version.
             if !fillKey.isEmpty, fillKey.hasPrefix("\(model.color)-") {
@@ -268,7 +273,7 @@ final class StripView: NSView {
                 fill.add(t, forKey: "dim")
             }
             fillKey = key
-            fill.contents = Dither.strip(size: bounds.size, color: model.color, fade: 0.01, dull: dull)
+            fill.contents = Dither.strip(size: bounds.size, color: model.color, fade: 0.01, dull: dull, dark: model.dark)
         }
         updateMask()
 

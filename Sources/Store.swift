@@ -22,16 +22,33 @@ enum Palette {
     ]
 
     /// OKLab, for distances that match what the eye sees.
-    static func oklab(_ i: Int) -> (Double, Double, Double) {
+    static func oklab(_ i: Int) -> (Double, Double, Double) { oklab(rgb(i)) }
+
+    static func oklab(_ c: (Double, Double, Double)) -> (Double, Double, Double) {
         func lin(_ c: Double) -> Double { c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4) }
-        let (r0, g0, b0) = rgb(i)
-        let r = lin(r0), g = lin(g0), b = lin(b0)
+        let r = lin(c.0), g = lin(c.1), b = lin(c.2)
         let l = cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b)
         let m = cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b)
         let s = cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b)
         return (0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s,
                 1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s,
                 0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s)
+    }
+
+    static func srgb(oklab c: (Double, Double, Double)) -> (Double, Double, Double) {
+        func gam(_ v: Double) -> Double { let v = max(0, min(1, v)); return v <= 0.0031308 ? v * 12.92 : 1.055 * pow(v, 1 / 2.4) - 0.055 }
+        let l = pow(c.0 + 0.3963377774 * c.1 + 0.2158037573 * c.2, 3)
+        let m = pow(c.0 - 0.1055613458 * c.1 - 0.0638541728 * c.2, 3)
+        let s = pow(c.0 - 0.0894841775 * c.1 - 1.2914855480 * c.2, 3)
+        return (gam(4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s),
+                gam(-1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s),
+                gam(-0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s))
+    }
+
+    /// The group hue at OKLab lightness `l`, chroma scaled by `k`.
+    static func shade(_ i: Int, l: Double, chroma k: Double) -> (Double, Double, Double) {
+        let c = oklab(i)
+        return srgb(oklab: (l, c.1 * k, c.2 * k))
     }
 
     static func distance(_ a: Int, _ b: Int) -> Double {
@@ -68,6 +85,22 @@ enum Palette {
         let l = 0.2126 * r + 0.7152 * g + 0.0722 * b
         let k = 0.38                                   // keep 38% of the chroma
         return ((l + (r - l) * k) * 0.62, (l + (g - l) * k) * 0.62, (l + (b - l) * k) * 0.62)
+    }
+
+    /// Dark mode fill: a deep shade of the hue. Same lightness for every color,
+    /// so yellow no longer outshouts blue; the idle shade is darker and grayer.
+    static func darkFill(_ i: Int, dull: Bool) -> (Double, Double, Double) {
+        shade(i, l: dull ? 0.27 : 0.34, chroma: dull ? 0.3 : 0.62)
+    }
+
+    /// Dark mode ink: a pale tint of the same hue (about 10:1 on the live fill).
+    static func darkInk(_ i: Int, dull: Bool) -> NSColor {
+        let (r, g, b) = shade(i, l: dull ? 0.78 : 0.93, chroma: dull ? 0.14 : 0.32)
+        return NSColor(srgbRed: r, green: g, blue: b, alpha: 1)
+    }
+
+    static func ink(_ i: Int, dull: Bool, dark: Bool) -> NSColor {
+        dark ? darkInk(i, dull: dull) : ink(i, dull: dull)
     }
 
     static func ink(_ i: Int, dull: Bool) -> NSColor {
@@ -120,6 +153,26 @@ struct Saved: Codable {
     var flashing: [Int]? = nil              // windows mid Christmas mode, so a killed Placard can put them back
     var flash: Bool? = nil                  // Christmas mode when an agent needs you (default on)
     var autoSkip: [String]? = nil           // windows whose label you removed: never auto-label again
+    var appearance: String? = nil           // "loud" or "dark"; nil follows the system
+}
+
+/// Strip look: the loud saturated fills, or deep shades for a dark desktop.
+enum Appearance: String, CaseIterable {
+    case system, loud, dark
+    var title: String { self == .system ? "Match System" : self == .loud ? "Loud" : "Dark" }
+}
+
+@MainActor
+enum Look {
+    /// Cached: read every frame by every strip.
+    private(set) static var dark = false
+    static func update() {
+        switch Store.shared.appearance {
+        case .loud: dark = false
+        case .dark: dark = true
+        case .system: dark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        }
+    }
 }
 
 enum Emoji {
@@ -177,6 +230,11 @@ final class Store {
     var flash: Bool {
         get { saved.flash ?? true }
         set { saved.flash = newValue; commit() }
+    }
+
+    var appearance: Appearance {
+        get { saved.appearance.flatMap(Appearance.init(rawValue:)) ?? .system }
+        set { saved.appearance = newValue == .system ? nil : newValue.rawValue; Look.update(); commit() }
     }
 
     var flashing: [Int] { saved.flashing ?? [] }

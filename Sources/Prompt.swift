@@ -192,10 +192,10 @@ final class PromptController: NSObject, NSTextFieldDelegate {
         if case .task(let id, _) = mode {
             let p = stateProvider?(id)
             preview?.configure(.init(name: Store.shared.group(forWindow: id)?.name ?? "", emoji: Store.shared.emoji(forWindow: id) ?? "",
-                                     subtitle: name.isEmpty ? (taskProvider?(id) ?? "") : name, color: color, state: p?.state ?? .none))
+                                     subtitle: name.isEmpty ? (taskProvider?(id) ?? "") : name, color: color, state: p?.state ?? .none, dark: Look.dark))
             return
         }
-        preview?.configure(.init(name: name.isEmpty ? "Untitled" : name, emoji: emoji, subtitle: sub, color: color, state: st))
+        preview?.configure(.init(name: name.isEmpty ? "Untitled" : name, emoji: emoji, subtitle: sub, color: color, state: st, dark: Look.dark))
     }
 
     private func setColor(_ i: Int, touched: Bool) {

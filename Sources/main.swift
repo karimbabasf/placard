@@ -8,6 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Window
     private let overlays = OverlayManager()
     private let prompt = PromptController()
     private var termSource: DispatchSourceSignal?
+    private var appearanceWatch: NSKeyValueObservation?
 
     func applicationDidFinishLaunching(_ note: Notification) {
         Fonts.register()
@@ -26,7 +27,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Window
         menu.delegate = self
         statusItem.menu = menu
 
+        Look.update()
         Store.shared.onChange = { [weak self] in self?.overlays.refreshInfo() }
+        // Match System: strips follow a Light/Dark switch on the next frame.
+        appearanceWatch = NSApp.observe(\.effectiveAppearance) { _, _ in
+            DispatchQueue.main.async { MainActor.assumeIsolated { Look.update() } }
+        }
         prompt.stateProvider = { [weak self] id in self?.overlays.state(for: id) ?? ("", .none) }
         prompt.taskProvider = { [weak self] id in self?.overlays.terminalTask(for: id) ?? "" }
         overlays.actions = self
@@ -229,6 +235,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Window
         menu.addItem(tint)
         menu.addItem(item("Auto-Label Agent Windows", state: Store.shared.auto) { Store.shared.auto.toggle() })
         menu.addItem(item("Flash When an Agent Needs You", state: Store.shared.flash) { Store.shared.flash.toggle() })
+        menu.addItem(appearanceItem())
         let login = NSMenuItem(title: "Open at Login", action: #selector(menuLogin), keyEquivalent: "")
         login.target = self
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
@@ -354,7 +361,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Window
         menu.addItem(item("Tint Window Background", state: store.tint) { [weak self] in self?.menuTint() })
         menu.addItem(item("Auto-Label Agent Windows", state: store.auto) { Store.shared.auto.toggle() })
         menu.addItem(item("Flash When an Agent Needs You", state: store.flash) { Store.shared.flash.toggle() })
+        menu.addItem(appearanceItem())
         return menu
+    }
+
+    /// Strip look: Match System, Loud, or Dark.
+    private func appearanceItem() -> NSMenuItem {
+        let it = NSMenuItem(title: "Appearance", action: nil, keyEquivalent: "")
+        let sub = NSMenu()
+        for a in Appearance.allCases {
+            sub.addItem(item(a.title, state: Store.shared.appearance == a) { Store.shared.appearance = a })
+            if a == .system { sub.addItem(.separator()) }
+        }
+        it.submenu = sub
+        return it
     }
 
     static func dot(_ color: Int) -> NSImage {

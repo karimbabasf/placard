@@ -45,6 +45,7 @@ final class ControlView: NSView {
     }
 
     var kind: Kind = .handle(color: nil, initial: "") { didSet { if kind != oldValue { restyle() } } }
+    var dark = false { didSet { if dark != oldValue { restyle() } } }
     var onPrimary: (() -> Void)?
     var onMenu: (() -> Void)?
     var onTask: (() -> Void)?
@@ -118,13 +119,13 @@ final class ControlView: NSView {
             layer?.contents = nil
             layer?.cornerRadius = 7
             layer?.backgroundColor = NSColor.clear.cgColor
-            let dark = Palette.all[c].darkText
+            let darkInk = !dark && Palette.all[c].darkText
             // light up only the piece under the pointer: name, chevron, or task text
             let r: CGRect = hoverX < ne ? CGRect(x: 0, y: 0, width: ne, height: b.height)
                 : hoverX < ce ? CGRect(x: ne, y: 0, width: ce - ne, height: b.height)
                 : CGRect(x: ce, y: 0, width: b.width - ce, height: b.height)
             hoverPad.frame = r.insetBy(dx: 0, dy: 2)
-            hoverPad.backgroundColor = (dark ? NSColor(white: 0, alpha: 0.12) : NSColor(white: 1, alpha: 0.16)).cgColor
+            hoverPad.backgroundColor = (darkInk ? NSColor(white: 0, alpha: 0.12) : NSColor(white: 1, alpha: 0.16)).cgColor
             hoverPad.isHidden = !hovering
             plus.isHidden = true
             letter.isHidden = true
@@ -132,13 +133,13 @@ final class ControlView: NSView {
             hoverPad.isHidden = true
             layer?.cornerRadius = 6
             if let c {
-                layer?.contents = Dither.swatch(size: b.size, color: c)
+                layer?.contents = Dither.swatch(size: b.size, color: c, dark: dark)
                 layer?.backgroundColor = nil
                 layer?.opacity = hovering ? 1 : 0.92
                 let isEmoji = initial.unicodeScalars.first.map { $0.properties.isEmoji && $0.value > 0x2000 } ?? false
                 letter.string = NSAttributedString(string: initial, attributes: [
                     .font: isEmoji ? (NSFont(name: "AppleColorEmoji", size: 13) ?? .systemFont(ofSize: 13)) : Fonts.geist(12, "SemiBold"),
-                    .foregroundColor: Palette.ink(c),
+                    .foregroundColor: Palette.ink(c, dull: false, dark: dark),
                 ])
                 letter.isHidden = false
                 plus.isHidden = true
@@ -352,7 +353,7 @@ final class OverlayManager {
             // Strip
             if showStrip, let g = group {
                 let p = parsed[id]
-                slot.strip.strip.configure(.init(name: g.name, emoji: store.emoji(forWindow: id) ?? "", subtitle: store.task(forWindow: id) ?? p?.subtitle ?? "", color: g.color, state: p?.state ?? .none))
+                slot.strip.strip.configure(.init(name: g.name, emoji: store.emoji(forWindow: id) ?? "", subtitle: store.task(forWindow: id) ?? p?.subtitle ?? "", color: g.color, state: p?.state ?? .none, dark: Look.dark))
                 let target = Windows.cocoaRect(stripCG)
                 if slot.stripFrame != target {
                     slot.strip.setFrame(target, display: false)
@@ -372,6 +373,7 @@ final class OverlayManager {
             }
 
             // Control: the name area on a strip, or a handle in the title bar.
+            slot.control.control.dark = Look.dark
             var controlCG: CGRect
             if showStrip, let g = group {
                 slot.strip.strip.layoutSubtreeIfNeeded()
