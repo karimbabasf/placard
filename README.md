@@ -44,6 +44,7 @@ That builds `Placard.app`, copies it to `~/Applications`, puts the `placard` com
 | Tile a group on one screen | `⌃⌥T` |
 | Remove a label | `⌃⌥U`, or the menu |
 | Hide every label | Menu: Show Labels. A small handle stays on each window so you can turn them back on |
+| Dark strips | Menu: Appearance. Match System (default) uses deep shades of each color when macOS is in Dark; Loud and Dark pin one look |
 
 From a shell, the `placard` command labels the window it runs in:
 
